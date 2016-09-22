@@ -1,0 +1,300 @@
+// Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+// This source code is licensed under the BSD-style license found in the
+// LICENSE file in the root directory of this source tree. An additional grant
+// of patent rights can be found in the PATENTS file in the same directory.
+// wuxingyi@le.com
+#include <cstdio>
+#include <string>
+#include <iostream>
+#include <sys/stat.h>
+#include <boost/program_options.hpp>
+
+#include "rocksdb/db.h"
+#include "rocksdb/options.h"
+#include "rocksdb/options.h"
+#include "newdb.offset.pb.h"
+
+
+static const int Vlogsize = 1<<8;
+static bool syncflag = false;
+using namespace std;
+
+const std::string kDBPath = "/home/wuxingyi/rocksdb/newdb/DBDATA/ROCKSDB";
+const std::string kDBVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/Vlog";
+static rocksdb::DB* db = nullptr;
+static FILE *vlogFile = NULL;
+static int vlogOffset = 0;
+
+int dbinit();
+
+struct dbOffset
+{
+  char *key;
+  int offset;  
+  dbOffset():key(0),offset(0){}
+};
+
+struct VlogItem {
+  newdb::dboffset dbo;
+};
+
+struct VlogItem_protobuf {
+  newdb::dboffset dbo;
+};
+
+//encode a newdb::dboffset struct into a string
+void encodeOffset(const newdb::dboffset &dbo, string &outstring)
+{
+  dbo.SerializeToString(&outstring);
+}
+
+//decode a string into a newdb::dboffset struct
+void decodeOffset(newdb::dboffset &dbo, const string &instring)
+{
+  dbo.ParseFromString(instring);
+}
+
+void removeVlog()
+{
+  remove(kDBVlog.c_str());  
+}
+
+int createVlogfile()
+{
+  if (NULL == vlogFile)
+  {
+    vlogFile = fopen(kDBVlog.c_str(), "a+");
+    assert(NULL != vlogFile); 
+    return 0;
+  }
+  return -1;
+}
+
+int destroydb()
+{
+  rocksdb::Options options;
+  rocksdb::DestroyDB(kDBPath.c_str(), options);
+}
+
+//wrapper of rocksdb::DB::Put
+int dbput(string key, string &value)
+{
+  rocksdb::WriteOptions woptions;
+  woptions.sync = syncflag;
+
+  rocksdb::Status s = db->Put(woptions, key, value);
+
+  assert(s.ok());
+  if (s.ok())
+    return 0;
+
+  return -1;
+}
+
+//wrapper of rocksdb::DB::Get
+int dbget(string key, string &value)
+{
+  if (nullptr == db)
+    dbinit();
+
+  // get value
+  rocksdb::Status s = db->Get(rocksdb::ReadOptions(), key, &value);
+
+  assert(s.ok());
+  if (s.ok())
+    return 0;
+
+  return -1;
+}
+
+//get a rocksdb handler and put it to global variable
+int dbinit()
+{
+  rocksdb::Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+
+  // open DB
+  rocksdb::Status s = rocksdb::DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+}
+
+void clearEnv()
+{
+  destroydb();  
+  removeVlog();
+}
+
+void initEnv()
+{
+  int dir_err = mkdir("DBDATA", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+  dbinit();
+  createVlogfile();
+}
+
+
+//@key is currently not used
+int vlog_write(string key, string value, int offset)
+{
+  assert(NULL != vlogFile);
+  
+  fseek(vlogFile, offset, SEEK_SET);
+  size_t writesize = fwrite(value.c_str(), 1, value.size(), vlogFile);
+  assert(writesize == value.size());
+  return 0;
+}
+
+//reading a value from vlog, note that we know the offset and length
+//@key is currently not used 
+int vlog_read(const string &key, string &value, int offset, int length)
+{
+  assert(NULL != vlogFile);
+  
+  fseek(vlogFile, offset, SEEK_SET);
+
+  //add a terminal null
+  char p[length+1];
+  p[length] = 0;
+  size_t readsize = fread(p, 1, length, vlogFile);
+  value = p;
+  return 0;
+}
+
+int Vlog_Get(string key, string &value)
+{
+  string encodedOffset;
+  int ret = dbget(key, encodedOffset);
+
+  assert(0 == ret);
+
+  newdb::dboffset dbo;
+  decodeOffset(dbo, encodedOffset);
+  vlog_read(key, value, dbo.offset(), dbo.length());
+}
+
+//store a key/value pair to wisckeydb
+//note the key/newdb::dboffset is stored to rocksdb
+//but vlaue is stored by us using vlog 
+int Vlog_Put(string key, string value)
+{
+  newdb::dboffset dbo;
+  dbo.set_length(value.size());
+  dbo.set_offset(vlogOffset);
+  string encodedstring;
+  encodeOffset(dbo, encodedstring);
+
+  int ret = dbput(key, encodedstring);
+  if (0 != ret)
+  {
+    cout << "write to rocksdb failed" << endl;
+    return -1;
+  }
+
+  //we write vlog here
+  ret = vlog_write(key, value, vlogOffset);
+  if (0 != ret)
+  {
+    cout << "write to vlog failed" << endl;
+    return -1;
+  }
+  
+  vlogOffset += value.size();
+  return 0;
+}
+
+void restartEnv()
+{
+  clearEnv();
+  initEnv();
+}
+
+void TEST_readwrite()
+{
+  restartEnv();
+
+  int j = 100;
+  string value(1024*1024,'c'); 
+  for(int i =0; i < j; i++)
+  {
+    string key = to_string(rand());
+    //cout << "before Put: key is " << key << ", value is " <<  value << endl;
+    Vlog_Put(key, value);
+    //value.clear();
+    //Vlog_Get(key, value);
+    //cout << "after  Get: key is " << key << ", value is " << value << endl;
+    //cout << "---------------------------------------------------" << endl;
+  }
+}
+
+
+void TEST_testprotobuf(string a, int length, int offset)
+{
+  newdb::dboffset dbo;
+  string inputstring;
+  dbo.set_length(length);
+  dbo.set_offset(offset);
+  encodeOffset(dbo, inputstring);
+  
+  cout << dbo.length() << ", " << dbo.offset() << endl;
+  dbput(a, inputstring);
+
+  string c;
+  dbget(a, c);
+  
+  decodeOffset(dbo, c);
+  cout << dbo.length() << ", " << dbo.offset() << endl;
+}
+
+void TEST_protobuf()
+{
+  restartEnv();
+
+  int j = 1000000;
+  for(int i =0; i < j; i++)
+  {
+    TEST_testprotobuf(to_string(rand()), rand(), rand());
+  }
+}
+
+void searchtest()
+{
+  initEnv();
+  string value;
+  Vlog_Get("1412620409", value);
+  cout << value << endl;
+}
+
+int processoptions(int argc, char **argv)
+{
+  using namespace boost::program_options;
+
+  options_description desc("Allowed options");
+  desc.add_options()
+      ("help,h", "produce help message")
+      ("sync,s", value<bool>()->default_value(true), "whether use sync flag")
+      ;
+
+  variables_map vm;        
+  store(parse_command_line(argc, argv, desc), vm);
+  notify(vm);    
+
+  if (vm.count("help")) 
+  {
+      cout << desc;
+      return 0;
+  }
+
+  syncflag = vm["sync"].as<bool>();
+  return 0;
+}
+int main(int argc, char **argv) 
+{
+  //TEST_readwrite();
+  //searchtest();
+  processoptions(argc, argv);
+  TEST_readwrite();
+  return 0;
+}
