@@ -24,6 +24,7 @@ const std::string kDBVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/Vlog";
 static rocksdb::DB* db = nullptr;
 static FILE *vlogFile = NULL;
 static int vlogOffset = 0;
+static int testkeys = 10000;
 
 int dbinit();
 
@@ -215,9 +216,8 @@ void TEST_readwrite()
 {
   restartEnv();
 
-  int j = 100;
   string value(1024*1024,'c'); 
-  for(int i =0; i < j; i++)
+  for(int i =0; i < testkeys; i++)
   {
     string key = to_string(rand());
     //cout << "before Put: key is " << key << ", value is " <<  value << endl;
@@ -252,8 +252,7 @@ void TEST_protobuf()
 {
   restartEnv();
 
-  int j = 1000000;
-  for(int i =0; i < j; i++)
+  for(int i =0; i < testkeys; i++)
   {
     TEST_testprotobuf(to_string(rand()), rand(), rand());
   }
@@ -275,6 +274,7 @@ int processoptions(int argc, char **argv)
   desc.add_options()
       ("help,h", "produce help message")
       ("sync,s", value<bool>()->default_value(true), "whether use sync flag")
+      ("keys,k", value<int>()->default_value(10000), "how many keys to put")
       ;
 
   variables_map vm;        
@@ -288,6 +288,7 @@ int processoptions(int argc, char **argv)
   }
 
   syncflag = vm["sync"].as<bool>();
+  testkeys = vm["keys"].as<int>();
   return 0;
 }
 int main(int argc, char **argv) 
