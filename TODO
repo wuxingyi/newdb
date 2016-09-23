@@ -1,2 +1,5 @@
 1.update proto definiton: put key to vlog
 2.optimize write db and write vlog
+3.implement vlog compact
+4.write more vlog files
+5.compatible with rocksdb interfaces
