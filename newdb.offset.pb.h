@@ -34,6 +34,7 @@ void protobuf_AssignDesc_newdb_2eoffset_2eproto();
 void protobuf_ShutdownFile_newdb_2eoffset_2eproto();
 
 class dboffset;
+class vlogkeyvalue;
 
 // ===================================================================
 
@@ -127,6 +128,128 @@ class dboffset : public ::google::protobuf::Message {
   void InitAsDefaultInstance();
   static dboffset* default_instance_;
 };
+// -------------------------------------------------------------------
+
+class vlogkeyvalue : public ::google::protobuf::Message {
+ public:
+  vlogkeyvalue();
+  virtual ~vlogkeyvalue();
+
+  vlogkeyvalue(const vlogkeyvalue& from);
+
+  inline vlogkeyvalue& operator=(const vlogkeyvalue& from) {
+    CopyFrom(from);
+    return *this;
+  }
+
+  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const {
+    return _unknown_fields_;
+  }
+
+  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields() {
+    return &_unknown_fields_;
+  }
+
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const vlogkeyvalue& default_instance();
+
+  void Swap(vlogkeyvalue* other);
+
+  // implements Message ----------------------------------------------
+
+  vlogkeyvalue* New() const;
+  void CopyFrom(const ::google::protobuf::Message& from);
+  void MergeFrom(const ::google::protobuf::Message& from);
+  void CopyFrom(const vlogkeyvalue& from);
+  void MergeFrom(const vlogkeyvalue& from);
+  void Clear();
+  bool IsInitialized() const;
+
+  int ByteSize() const;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input);
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const;
+  ::google::protobuf::uint8* SerializeWithCachedSizesToArray(::google::protobuf::uint8* output) const;
+  int GetCachedSize() const { return _cached_size_; }
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const;
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // required int64 keysize = 1;
+  inline bool has_keysize() const;
+  inline void clear_keysize();
+  static const int kKeysizeFieldNumber = 1;
+  inline ::google::protobuf::int64 keysize() const;
+  inline void set_keysize(::google::protobuf::int64 value);
+
+  // required int64 valuesize = 2;
+  inline bool has_valuesize() const;
+  inline void clear_valuesize();
+  static const int kValuesizeFieldNumber = 2;
+  inline ::google::protobuf::int64 valuesize() const;
+  inline void set_valuesize(::google::protobuf::int64 value);
+
+  // required bytes keystring = 3;
+  inline bool has_keystring() const;
+  inline void clear_keystring();
+  static const int kKeystringFieldNumber = 3;
+  inline const ::std::string& keystring() const;
+  inline void set_keystring(const ::std::string& value);
+  inline void set_keystring(const char* value);
+  inline void set_keystring(const void* value, size_t size);
+  inline ::std::string* mutable_keystring();
+  inline ::std::string* release_keystring();
+  inline void set_allocated_keystring(::std::string* keystring);
+
+  // required bytes valuestring = 4;
+  inline bool has_valuestring() const;
+  inline void clear_valuestring();
+  static const int kValuestringFieldNumber = 4;
+  inline const ::std::string& valuestring() const;
+  inline void set_valuestring(const ::std::string& value);
+  inline void set_valuestring(const char* value);
+  inline void set_valuestring(const void* value, size_t size);
+  inline ::std::string* mutable_valuestring();
+  inline ::std::string* release_valuestring();
+  inline void set_allocated_valuestring(::std::string* valuestring);
+
+  // @@protoc_insertion_point(class_scope:newdb.vlogkeyvalue)
+ private:
+  inline void set_has_keysize();
+  inline void clear_has_keysize();
+  inline void set_has_valuesize();
+  inline void clear_has_valuesize();
+  inline void set_has_keystring();
+  inline void clear_has_keystring();
+  inline void set_has_valuestring();
+  inline void clear_has_valuestring();
+
+  ::google::protobuf::UnknownFieldSet _unknown_fields_;
+
+  ::google::protobuf::int64 keysize_;
+  ::google::protobuf::int64 valuesize_;
+  ::std::string* keystring_;
+  ::std::string* valuestring_;
+
+  mutable int _cached_size_;
+  ::google::protobuf::uint32 _has_bits_[(4 + 31) / 32];
+
+  friend void  protobuf_AddDesc_newdb_2eoffset_2eproto();
+  friend void protobuf_AssignDesc_newdb_2eoffset_2eproto();
+  friend void protobuf_ShutdownFile_newdb_2eoffset_2eproto();
+
+  void InitAsDefaultInstance();
+  static vlogkeyvalue* default_instance_;
+};
 // ===================================================================
 
 
@@ -176,6 +299,194 @@ inline ::google::protobuf::int64 dboffset::offset() const {
 inline void dboffset::set_offset(::google::protobuf::int64 value) {
   set_has_offset();
   offset_ = value;
+}
+
+// -------------------------------------------------------------------
+
+// vlogkeyvalue
+
+// required int64 keysize = 1;
+inline bool vlogkeyvalue::has_keysize() const {
+  return (_has_bits_[0] & 0x00000001u) != 0;
+}
+inline void vlogkeyvalue::set_has_keysize() {
+  _has_bits_[0] |= 0x00000001u;
+}
+inline void vlogkeyvalue::clear_has_keysize() {
+  _has_bits_[0] &= ~0x00000001u;
+}
+inline void vlogkeyvalue::clear_keysize() {
+  keysize_ = GOOGLE_LONGLONG(0);
+  clear_has_keysize();
+}
+inline ::google::protobuf::int64 vlogkeyvalue::keysize() const {
+  return keysize_;
+}
+inline void vlogkeyvalue::set_keysize(::google::protobuf::int64 value) {
+  set_has_keysize();
+  keysize_ = value;
+}
+
+// required int64 valuesize = 2;
+inline bool vlogkeyvalue::has_valuesize() const {
+  return (_has_bits_[0] & 0x00000002u) != 0;
+}
+inline void vlogkeyvalue::set_has_valuesize() {
+  _has_bits_[0] |= 0x00000002u;
+}
+inline void vlogkeyvalue::clear_has_valuesize() {
+  _has_bits_[0] &= ~0x00000002u;
+}
+inline void vlogkeyvalue::clear_valuesize() {
+  valuesize_ = GOOGLE_LONGLONG(0);
+  clear_has_valuesize();
+}
+inline ::google::protobuf::int64 vlogkeyvalue::valuesize() const {
+  return valuesize_;
+}
+inline void vlogkeyvalue::set_valuesize(::google::protobuf::int64 value) {
+  set_has_valuesize();
+  valuesize_ = value;
+}
+
+// required bytes keystring = 3;
+inline bool vlogkeyvalue::has_keystring() const {
+  return (_has_bits_[0] & 0x00000004u) != 0;
+}
+inline void vlogkeyvalue::set_has_keystring() {
+  _has_bits_[0] |= 0x00000004u;
+}
+inline void vlogkeyvalue::clear_has_keystring() {
+  _has_bits_[0] &= ~0x00000004u;
+}
+inline void vlogkeyvalue::clear_keystring() {
+  if (keystring_ != &::google::protobuf::internal::kEmptyString) {
+    keystring_->clear();
+  }
+  clear_has_keystring();
+}
+inline const ::std::string& vlogkeyvalue::keystring() const {
+  return *keystring_;
+}
+inline void vlogkeyvalue::set_keystring(const ::std::string& value) {
+  set_has_keystring();
+  if (keystring_ == &::google::protobuf::internal::kEmptyString) {
+    keystring_ = new ::std::string;
+  }
+  keystring_->assign(value);
+}
+inline void vlogkeyvalue::set_keystring(const char* value) {
+  set_has_keystring();
+  if (keystring_ == &::google::protobuf::internal::kEmptyString) {
+    keystring_ = new ::std::string;
+  }
+  keystring_->assign(value);
+}
+inline void vlogkeyvalue::set_keystring(const void* value, size_t size) {
+  set_has_keystring();
+  if (keystring_ == &::google::protobuf::internal::kEmptyString) {
+    keystring_ = new ::std::string;
+  }
+  keystring_->assign(reinterpret_cast<const char*>(value), size);
+}
+inline ::std::string* vlogkeyvalue::mutable_keystring() {
+  set_has_keystring();
+  if (keystring_ == &::google::protobuf::internal::kEmptyString) {
+    keystring_ = new ::std::string;
+  }
+  return keystring_;
+}
+inline ::std::string* vlogkeyvalue::release_keystring() {
+  clear_has_keystring();
+  if (keystring_ == &::google::protobuf::internal::kEmptyString) {
+    return NULL;
+  } else {
+    ::std::string* temp = keystring_;
+    keystring_ = const_cast< ::std::string*>(&::google::protobuf::internal::kEmptyString);
+    return temp;
+  }
+}
+inline void vlogkeyvalue::set_allocated_keystring(::std::string* keystring) {
+  if (keystring_ != &::google::protobuf::internal::kEmptyString) {
+    delete keystring_;
+  }
+  if (keystring) {
+    set_has_keystring();
+    keystring_ = keystring;
+  } else {
+    clear_has_keystring();
+    keystring_ = const_cast< ::std::string*>(&::google::protobuf::internal::kEmptyString);
+  }
+}
+
+// required bytes valuestring = 4;
+inline bool vlogkeyvalue::has_valuestring() const {
+  return (_has_bits_[0] & 0x00000008u) != 0;
+}
+inline void vlogkeyvalue::set_has_valuestring() {
+  _has_bits_[0] |= 0x00000008u;
+}
+inline void vlogkeyvalue::clear_has_valuestring() {
+  _has_bits_[0] &= ~0x00000008u;
+}
+inline void vlogkeyvalue::clear_valuestring() {
+  if (valuestring_ != &::google::protobuf::internal::kEmptyString) {
+    valuestring_->clear();
+  }
+  clear_has_valuestring();
+}
+inline const ::std::string& vlogkeyvalue::valuestring() const {
+  return *valuestring_;
+}
+inline void vlogkeyvalue::set_valuestring(const ::std::string& value) {
+  set_has_valuestring();
+  if (valuestring_ == &::google::protobuf::internal::kEmptyString) {
+    valuestring_ = new ::std::string;
+  }
+  valuestring_->assign(value);
+}
+inline void vlogkeyvalue::set_valuestring(const char* value) {
+  set_has_valuestring();
+  if (valuestring_ == &::google::protobuf::internal::kEmptyString) {
+    valuestring_ = new ::std::string;
+  }
+  valuestring_->assign(value);
+}
+inline void vlogkeyvalue::set_valuestring(const void* value, size_t size) {
+  set_has_valuestring();
+  if (valuestring_ == &::google::protobuf::internal::kEmptyString) {
+    valuestring_ = new ::std::string;
+  }
+  valuestring_->assign(reinterpret_cast<const char*>(value), size);
+}
+inline ::std::string* vlogkeyvalue::mutable_valuestring() {
+  set_has_valuestring();
+  if (valuestring_ == &::google::protobuf::internal::kEmptyString) {
+    valuestring_ = new ::std::string;
+  }
+  return valuestring_;
+}
+inline ::std::string* vlogkeyvalue::release_valuestring() {
+  clear_has_valuestring();
+  if (valuestring_ == &::google::protobuf::internal::kEmptyString) {
+    return NULL;
+  } else {
+    ::std::string* temp = valuestring_;
+    valuestring_ = const_cast< ::std::string*>(&::google::protobuf::internal::kEmptyString);
+    return temp;
+  }
+}
+inline void vlogkeyvalue::set_allocated_valuestring(::std::string* valuestring) {
+  if (valuestring_ != &::google::protobuf::internal::kEmptyString) {
+    delete valuestring_;
+  }
+  if (valuestring) {
+    set_has_valuestring();
+    valuestring_ = valuestring;
+  } else {
+    clear_has_valuestring();
+    valuestring_ = const_cast< ::std::string*>(&::google::protobuf::internal::kEmptyString);
+  }
 }
 
 

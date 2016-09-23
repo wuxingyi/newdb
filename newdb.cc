@@ -64,6 +64,17 @@ void decodeOffset(newdb::dboffset &dbo, const string &instring)
   dbo.ParseFromString(instring);
 }
 
+//encode a newdb::vlogkeyvalue struct into a string
+void encodeVlogkeyvalue(const newdb::vlogkeyvalue &vlogkeyvalue, string &outstring)
+{
+  vlogkeyvalue.SerializeToString(&outstring);
+}
+
+//decode a string into a newdb::vlogkeyvalue struct
+void decodeVlogkeyvalue(newdb::vlogkeyvalue &vlogkeyvalue, const string &instring)
+{
+  vlogkeyvalue.ParseFromString(instring);
+}
 void removeVlog()
 {
   remove(kDBVlog.c_str());  
@@ -160,15 +171,50 @@ void initEnv()
   createVlogfile();
 }
 
+int encodeDboffset(int offset , int length, string &outstring)
+{
+  newdb::dboffset dbo;
+  dbo.set_length(length);
+  dbo.set_offset(offset);
+  encodeOffset(dbo, outstring);
 
-//@key is currently not used
-int vlog_write(string key, string value, int offset)
+  return 0;
+}
+int encodeVlogEntry(const string &key, const string &value, string &outstring)
+{
+  newdb::vlogkeyvalue kv;
+  kv.set_keysize(key.size());
+  kv.set_valuesize(value.size());
+  kv.set_keystring(key);
+  kv.set_valuestring(value);
+  encodeVlogkeyvalue(kv, outstring);
+
+  return 0;
+}
+
+int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string &key, string &value)
+{
+  newdb::vlogkeyvalue kv;
+  decodeVlogkeyvalue(kv, instring);
+
+  keysize = kv.keysize();
+  valuesize = kv.valuesize();
+  key = kv.keystring();
+  value = kv.valuestring();
+
+  return 0;
+}
+
+//@key is used now
+int vlog_write(int offset, const string &kvstring)
 {
   assert(NULL != vlogFile);
   
   fseek(vlogFile, offset, SEEK_SET);
-  size_t writesize = fwrite(value.c_str(), 1, value.size(), vlogFile);
-  assert(writesize == value.size());
+  
+  size_t writesize = fwrite(kvstring.data(), 1, kvstring.size(), vlogFile);
+  assert(writesize == kvstring.size());
+
   return 0;
 }
 
@@ -181,10 +227,17 @@ int vlog_read(const string &key, string &value, int offset, int length)
   fseek(vlogFile, offset, SEEK_SET);
 
   //add a terminal null
-  char p[length+1];
-  p[length] = 0;
+  char p[length];
   size_t readsize = fread(p, 1, length, vlogFile);
-  value = p;
+  string vlogbuffer = p;
+
+  string readkey;
+  int keysize, valuesize;
+
+  cout << "read size is " << readsize << endl;
+  //value is actually a vlogkeyvalue struct, so we should decode it
+  decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value);
+  assert(readkey == key);
   return 0;
 }
 
@@ -212,28 +265,28 @@ int Vlog_Get(string key, string &value)
 //but vlaue is stored by us using vlog 
 int Vlog_Put(string key, string value)
 {
-  newdb::dboffset dbo;
-  dbo.set_length(value.size());
-  dbo.set_offset(vlogOffset);
-  string encodedstring;
-  encodeOffset(dbo, encodedstring);
+  string Vlogstring, dboffsetstring;
+  int ret = encodeVlogEntry(key, value, Vlogstring);
 
-  int ret = dbput(key, encodedstring);
+  encodeDboffset(vlogOffset, Vlogstring.size(), dboffsetstring);
+
+  ret = dbput(key, dboffsetstring);
   if (0 != ret)
   {
     cout << "write to rocksdb failed" << endl;
     return -1;
   }
 
+  int newoffset = 0;
   //we write vlog here
-  ret = vlog_write(key, value, vlogOffset);
+  ret = vlog_write(vlogOffset, Vlogstring);
   if (0 != ret)
   {
     cout << "write to vlog failed" << endl;
     return -1;
   }
   
-  vlogOffset += value.size();
+  vlogOffset += Vlogstring.size();
   return 0;
 }
 
@@ -247,10 +300,11 @@ void TEST_readwrite()
 {
   restartEnv();
 
-  string value(1024*1024,'c'); 
   for(int i =0; i < testkeys; i++)
   {
-    string key = to_string(rand());
+    int num = rand();
+    string value(num/100000,'c'); 
+    string key = to_string(num);
     //cout << "before Put: key is " << key << ", value is " <<  value << endl;
     Vlog_Put(key, value);
     //value.clear();
@@ -318,7 +372,7 @@ int processoptions(int argc, char **argv)
   desc.add_options()
       ("help,h", "produce help message")
       ("sync,s", value<bool>()->default_value(true), "whether use sync flag")
-      ("keys,k", value<int>()->default_value(10000), "how many keys to put")
+      ("keys,k", value<int>()->default_value(1), "how many keys to put")
       ;
 
   variables_map vm;        
@@ -340,7 +394,7 @@ int main(int argc, char **argv)
   //TEST_readwrite();
   //searchtest();
   processoptions(argc, argv);
-  //TEST_readwrite();
-  TEST_writedelete();
+  TEST_readwrite();
+  //TEST_writedelete();
   return 0;
 }

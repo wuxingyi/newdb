@@ -4,3 +4,11 @@ message dboffset
   required int64 length = 1;
   required int64 offset = 2;
 }
+
+message vlogkeyvalue
+{
+  required int64 keysize = 1;
+  required int64 valuesize = 2;
+  required bytes keystring = 3;
+  required bytes valuestring = 4;
+}
