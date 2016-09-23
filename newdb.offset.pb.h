@@ -35,6 +35,7 @@ void protobuf_ShutdownFile_newdb_2eoffset_2eproto();
 
 class dboffset;
 class vlogkeyvalue;
+class kvsize;
 
 // ===================================================================
 
@@ -198,7 +199,7 @@ class vlogkeyvalue : public ::google::protobuf::Message {
   inline ::google::protobuf::int64 valuesize() const;
   inline void set_valuesize(::google::protobuf::int64 value);
 
-  // required bytes keystring = 3;
+  // optional bytes keystring = 3;
   inline bool has_keystring() const;
   inline void clear_keystring();
   static const int kKeystringFieldNumber = 3;
@@ -210,7 +211,7 @@ class vlogkeyvalue : public ::google::protobuf::Message {
   inline ::std::string* release_keystring();
   inline void set_allocated_keystring(::std::string* keystring);
 
-  // required bytes valuestring = 4;
+  // optional bytes valuestring = 4;
   inline bool has_valuestring() const;
   inline void clear_valuestring();
   static const int kValuestringFieldNumber = 4;
@@ -249,6 +250,98 @@ class vlogkeyvalue : public ::google::protobuf::Message {
 
   void InitAsDefaultInstance();
   static vlogkeyvalue* default_instance_;
+};
+// -------------------------------------------------------------------
+
+class kvsize : public ::google::protobuf::Message {
+ public:
+  kvsize();
+  virtual ~kvsize();
+
+  kvsize(const kvsize& from);
+
+  inline kvsize& operator=(const kvsize& from) {
+    CopyFrom(from);
+    return *this;
+  }
+
+  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const {
+    return _unknown_fields_;
+  }
+
+  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields() {
+    return &_unknown_fields_;
+  }
+
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const kvsize& default_instance();
+
+  void Swap(kvsize* other);
+
+  // implements Message ----------------------------------------------
+
+  kvsize* New() const;
+  void CopyFrom(const ::google::protobuf::Message& from);
+  void MergeFrom(const ::google::protobuf::Message& from);
+  void CopyFrom(const kvsize& from);
+  void MergeFrom(const kvsize& from);
+  void Clear();
+  bool IsInitialized() const;
+
+  int ByteSize() const;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input);
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const;
+  ::google::protobuf::uint8* SerializeWithCachedSizesToArray(::google::protobuf::uint8* output) const;
+  int GetCachedSize() const { return _cached_size_; }
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const;
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // required fixed64 keysize = 1;
+  inline bool has_keysize() const;
+  inline void clear_keysize();
+  static const int kKeysizeFieldNumber = 1;
+  inline ::google::protobuf::uint64 keysize() const;
+  inline void set_keysize(::google::protobuf::uint64 value);
+
+  // required fixed64 valuesize = 2;
+  inline bool has_valuesize() const;
+  inline void clear_valuesize();
+  static const int kValuesizeFieldNumber = 2;
+  inline ::google::protobuf::uint64 valuesize() const;
+  inline void set_valuesize(::google::protobuf::uint64 value);
+
+  // @@protoc_insertion_point(class_scope:newdb.kvsize)
+ private:
+  inline void set_has_keysize();
+  inline void clear_has_keysize();
+  inline void set_has_valuesize();
+  inline void clear_has_valuesize();
+
+  ::google::protobuf::UnknownFieldSet _unknown_fields_;
+
+  ::google::protobuf::uint64 keysize_;
+  ::google::protobuf::uint64 valuesize_;
+
+  mutable int _cached_size_;
+  ::google::protobuf::uint32 _has_bits_[(2 + 31) / 32];
+
+  friend void  protobuf_AddDesc_newdb_2eoffset_2eproto();
+  friend void protobuf_AssignDesc_newdb_2eoffset_2eproto();
+  friend void protobuf_ShutdownFile_newdb_2eoffset_2eproto();
+
+  void InitAsDefaultInstance();
+  static kvsize* default_instance_;
 };
 // ===================================================================
 
@@ -349,7 +442,7 @@ inline void vlogkeyvalue::set_valuesize(::google::protobuf::int64 value) {
   valuesize_ = value;
 }
 
-// required bytes keystring = 3;
+// optional bytes keystring = 3;
 inline bool vlogkeyvalue::has_keystring() const {
   return (_has_bits_[0] & 0x00000004u) != 0;
 }
@@ -419,7 +512,7 @@ inline void vlogkeyvalue::set_allocated_keystring(::std::string* keystring) {
   }
 }
 
-// required bytes valuestring = 4;
+// optional bytes valuestring = 4;
 inline bool vlogkeyvalue::has_valuestring() const {
   return (_has_bits_[0] & 0x00000008u) != 0;
 }
@@ -487,6 +580,54 @@ inline void vlogkeyvalue::set_allocated_valuestring(::std::string* valuestring) 
     clear_has_valuestring();
     valuestring_ = const_cast< ::std::string*>(&::google::protobuf::internal::kEmptyString);
   }
+}
+
+// -------------------------------------------------------------------
+
+// kvsize
+
+// required fixed64 keysize = 1;
+inline bool kvsize::has_keysize() const {
+  return (_has_bits_[0] & 0x00000001u) != 0;
+}
+inline void kvsize::set_has_keysize() {
+  _has_bits_[0] |= 0x00000001u;
+}
+inline void kvsize::clear_has_keysize() {
+  _has_bits_[0] &= ~0x00000001u;
+}
+inline void kvsize::clear_keysize() {
+  keysize_ = GOOGLE_ULONGLONG(0);
+  clear_has_keysize();
+}
+inline ::google::protobuf::uint64 kvsize::keysize() const {
+  return keysize_;
+}
+inline void kvsize::set_keysize(::google::protobuf::uint64 value) {
+  set_has_keysize();
+  keysize_ = value;
+}
+
+// required fixed64 valuesize = 2;
+inline bool kvsize::has_valuesize() const {
+  return (_has_bits_[0] & 0x00000002u) != 0;
+}
+inline void kvsize::set_has_valuesize() {
+  _has_bits_[0] |= 0x00000002u;
+}
+inline void kvsize::clear_has_valuesize() {
+  _has_bits_[0] &= ~0x00000002u;
+}
+inline void kvsize::clear_valuesize() {
+  valuesize_ = GOOGLE_ULONGLONG(0);
+  clear_has_valuesize();
+}
+inline ::google::protobuf::uint64 kvsize::valuesize() const {
+  return valuesize_;
+}
+inline void kvsize::set_valuesize(::google::protobuf::uint64 value) {
+  set_has_valuesize();
+  valuesize_ = value;
 }
 
 

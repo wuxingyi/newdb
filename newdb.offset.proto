@@ -9,6 +9,7 @@ message vlogkeyvalue
 {
   required int64 keysize = 1;
   required int64 valuesize = 2;
-  required bytes keystring = 3;
-  required bytes valuestring = 4;
+  optional bytes keystring = 3;
+  optional bytes valuestring = 4;
 }
+

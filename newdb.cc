@@ -15,10 +15,23 @@
 #include "newdb.offset.pb.h"
 
 
-//VLOG FORMAT
-//------------------------------------
-//|keysize | valuesize | key | value |
-//------------------------------------
+/*
+VLOG FORMAT
+note that keyszie and valuesize is fixed size, always take 8+8 bytes.
+definiton of message vlogkeyvalue:
+we set keystring and valuestring as optional because we will decode 
+keysize and valuesize.
+message vlogkeyvalue
+{
+  required fixed64 keysize = 1;
+  required fixed64 valuesize = 2;
+  optional bytes keystring = 3;
+  optional bytes valuestring = 4;
+}
+------------------------------------
+|keysize | valuesize | key | value |
+------------------------------------
+*/
 
 //ROCKSDB STRUCT
 //----------------------------------------
@@ -34,6 +47,9 @@ static rocksdb::DB* db = nullptr;
 static FILE *vlogFile = NULL;
 static int vlogOffset = 0;
 static int testkeys = 10000;
+
+//fixed length of keysize+valuesize
+static const int VlogFixedLen = 16;
 
 int dbinit();
 
@@ -187,6 +203,7 @@ int encodeVlogEntry(const string &key, const string &value, string &outstring)
   kv.set_valuesize(value.size());
   kv.set_keystring(key);
   kv.set_valuestring(value);
+
   encodeVlogkeyvalue(kv, outstring);
 
   return 0;
@@ -210,6 +227,7 @@ int vlog_write(int offset, const string &kvstring)
 {
   assert(NULL != vlogFile);
   
+  //cout << __func__ << " kvstring length is " << kvstring.size() << endl;
   fseek(vlogFile, offset, SEEK_SET);
   
   size_t writesize = fwrite(kvstring.data(), 1, kvstring.size(), vlogFile);
@@ -229,12 +247,11 @@ int vlog_read(const string &key, string &value, int offset, int length)
   //add a terminal null
   char p[length];
   size_t readsize = fread(p, 1, length, vlogFile);
-  string vlogbuffer = p;
+  string vlogbuffer(p, length);
 
   string readkey;
   int keysize, valuesize;
 
-  cout << "read size is " << readsize << endl;
   //value is actually a vlogkeyvalue struct, so we should decode it
   decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value);
   assert(readkey == key);
@@ -278,8 +295,15 @@ int Vlog_Put(string key, string value)
   }
 
   int newoffset = 0;
+
+  //note that there may be null terminal(because it's binary), so we should use
+  //string::string (const char* s, size_t n) constructor
+  //this is really buggy
+  string tempv(Vlogstring.c_str(), Vlogstring.size());
+
+  //cout << __func__ << " tempv length is " << tempv.size() << endl;
   //we write vlog here
-  ret = vlog_write(vlogOffset, Vlogstring);
+  ret = vlog_write(vlogOffset, tempv);
   if (0 != ret)
   {
     cout << "write to vlog failed" << endl;
@@ -290,6 +314,24 @@ int Vlog_Put(string key, string value)
   return 0;
 }
 
+void Vlog_Traverse()
+{
+  //we start from the 0 offset
+  int vlogoffset = 0;        
+  char p[VlogFixedLen];
+
+  fseek(vlogFile, vlogoffset, SEEK_SET);
+  size_t readsize = fread(p, 1, VlogFixedLen, vlogFile);
+  
+  cout << "read " << readsize << " bytes from vlog"<< endl;
+
+  newdb::vlogkeyvalue kv;
+  string kvstring(p, VlogFixedLen);
+  decodeVlogkeyvalue(kv, kvstring);
+
+  cout << kv.keysize() << endl;
+  cout << kv.valuesize() << endl;
+}
 void restartEnv()
 {
   clearEnv();
@@ -303,14 +345,14 @@ void TEST_readwrite()
   for(int i =0; i < testkeys; i++)
   {
     int num = rand();
-    string value(num/100000,'c'); 
+    string value(100,'c'); 
     string key = to_string(num);
-    //cout << "before Put: key is " << key << ", value is " <<  value << endl;
+    cout << "before Put: key is " << key << ", value is " <<  value << endl;
     Vlog_Put(key, value);
-    //value.clear();
-    //Vlog_Get(key, value);
-    //cout << "after  Get: key is " << key << ", value is " << value << endl;
-    //cout << "---------------------------------------------------" << endl;
+    value.clear();
+    Vlog_Get(key, value);
+    cout << "after  Get: key is " << key << ", value is " << value << endl;
+    cout << "---------------------------------------------------" << endl;
   }
 }
 
@@ -396,5 +438,7 @@ int main(int argc, char **argv)
   processoptions(argc, argv);
   TEST_readwrite();
   //TEST_writedelete();
+  //initEnv();
+  //Vlog_Traverse();
   return 0;
 }

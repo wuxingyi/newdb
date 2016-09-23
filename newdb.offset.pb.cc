@@ -26,6 +26,9 @@ const ::google::protobuf::internal::GeneratedMessageReflection*
 const ::google::protobuf::Descriptor* vlogkeyvalue_descriptor_ = NULL;
 const ::google::protobuf::internal::GeneratedMessageReflection*
   vlogkeyvalue_reflection_ = NULL;
+const ::google::protobuf::Descriptor* kvsize_descriptor_ = NULL;
+const ::google::protobuf::internal::GeneratedMessageReflection*
+  kvsize_reflection_ = NULL;
 
 }  // namespace
 
@@ -70,6 +73,22 @@ void protobuf_AssignDesc_newdb_2eoffset_2eproto() {
       ::google::protobuf::DescriptorPool::generated_pool(),
       ::google::protobuf::MessageFactory::generated_factory(),
       sizeof(vlogkeyvalue));
+  kvsize_descriptor_ = file->message_type(2);
+  static const int kvsize_offsets_[2] = {
+    GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(kvsize, keysize_),
+    GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(kvsize, valuesize_),
+  };
+  kvsize_reflection_ =
+    new ::google::protobuf::internal::GeneratedMessageReflection(
+      kvsize_descriptor_,
+      kvsize::default_instance_,
+      kvsize_offsets_,
+      GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(kvsize, _has_bits_[0]),
+      GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(kvsize, _unknown_fields_),
+      -1,
+      ::google::protobuf::DescriptorPool::generated_pool(),
+      ::google::protobuf::MessageFactory::generated_factory(),
+      sizeof(kvsize));
 }
 
 namespace {
@@ -86,6 +105,8 @@ void protobuf_RegisterTypes(const ::std::string&) {
     dboffset_descriptor_, &dboffset::default_instance());
   ::google::protobuf::MessageFactory::InternalRegisterGeneratedMessage(
     vlogkeyvalue_descriptor_, &vlogkeyvalue::default_instance());
+  ::google::protobuf::MessageFactory::InternalRegisterGeneratedMessage(
+    kvsize_descriptor_, &kvsize::default_instance());
 }
 
 }  // namespace
@@ -95,6 +116,8 @@ void protobuf_ShutdownFile_newdb_2eoffset_2eproto() {
   delete dboffset_reflection_;
   delete vlogkeyvalue::default_instance_;
   delete vlogkeyvalue_reflection_;
+  delete kvsize::default_instance_;
+  delete kvsize_reflection_;
 }
 
 void protobuf_AddDesc_newdb_2eoffset_2eproto() {
@@ -107,14 +130,17 @@ void protobuf_AddDesc_newdb_2eoffset_2eproto() {
     "\n\022newdb.offset.proto\022\005newdb\"*\n\010dboffset\022"
     "\016\n\006length\030\001 \002(\003\022\016\n\006offset\030\002 \002(\003\"Z\n\014vlogk"
     "eyvalue\022\017\n\007keysize\030\001 \002(\003\022\021\n\tvaluesize\030\002 "
-    "\002(\003\022\021\n\tkeystring\030\003 \002(\014\022\023\n\013valuestring\030\004 "
-    "\002(\014", 163);
+    "\002(\003\022\021\n\tkeystring\030\003 \001(\014\022\023\n\013valuestring\030\004 "
+    "\001(\014\",\n\006kvsize\022\017\n\007keysize\030\001 \002(\006\022\021\n\tvalues"
+    "ize\030\002 \002(\006", 209);
   ::google::protobuf::MessageFactory::InternalRegisterGeneratedFile(
     "newdb.offset.proto", &protobuf_RegisterTypes);
   dboffset::default_instance_ = new dboffset();
   vlogkeyvalue::default_instance_ = new vlogkeyvalue();
+  kvsize::default_instance_ = new kvsize();
   dboffset::default_instance_->InitAsDefaultInstance();
   vlogkeyvalue::default_instance_->InitAsDefaultInstance();
+  kvsize::default_instance_->InitAsDefaultInstance();
   ::google::protobuf::internal::OnShutdown(&protobuf_ShutdownFile_newdb_2eoffset_2eproto);
 }
 
@@ -498,7 +524,7 @@ bool vlogkeyvalue::MergePartialFromCodedStream(
         break;
       }
 
-      // required bytes keystring = 3;
+      // optional bytes keystring = 3;
       case 3: {
         if (::google::protobuf::internal::WireFormatLite::GetTagWireType(tag) ==
             ::google::protobuf::internal::WireFormatLite::WIRETYPE_LENGTH_DELIMITED) {
@@ -512,7 +538,7 @@ bool vlogkeyvalue::MergePartialFromCodedStream(
         break;
       }
 
-      // required bytes valuestring = 4;
+      // optional bytes valuestring = 4;
       case 4: {
         if (::google::protobuf::internal::WireFormatLite::GetTagWireType(tag) ==
             ::google::protobuf::internal::WireFormatLite::WIRETYPE_LENGTH_DELIMITED) {
@@ -554,13 +580,13 @@ void vlogkeyvalue::SerializeWithCachedSizes(
     ::google::protobuf::internal::WireFormatLite::WriteInt64(2, this->valuesize(), output);
   }
 
-  // required bytes keystring = 3;
+  // optional bytes keystring = 3;
   if (has_keystring()) {
     ::google::protobuf::internal::WireFormatLite::WriteBytes(
       3, this->keystring(), output);
   }
 
-  // required bytes valuestring = 4;
+  // optional bytes valuestring = 4;
   if (has_valuestring()) {
     ::google::protobuf::internal::WireFormatLite::WriteBytes(
       4, this->valuestring(), output);
@@ -584,14 +610,14 @@ void vlogkeyvalue::SerializeWithCachedSizes(
     target = ::google::protobuf::internal::WireFormatLite::WriteInt64ToArray(2, this->valuesize(), target);
   }
 
-  // required bytes keystring = 3;
+  // optional bytes keystring = 3;
   if (has_keystring()) {
     target =
       ::google::protobuf::internal::WireFormatLite::WriteBytesToArray(
         3, this->keystring(), target);
   }
 
-  // required bytes valuestring = 4;
+  // optional bytes valuestring = 4;
   if (has_valuestring()) {
     target =
       ::google::protobuf::internal::WireFormatLite::WriteBytesToArray(
@@ -623,14 +649,14 @@ int vlogkeyvalue::ByteSize() const {
           this->valuesize());
     }
 
-    // required bytes keystring = 3;
+    // optional bytes keystring = 3;
     if (has_keystring()) {
       total_size += 1 +
         ::google::protobuf::internal::WireFormatLite::BytesSize(
           this->keystring());
     }
 
-    // required bytes valuestring = 4;
+    // optional bytes valuestring = 4;
     if (has_valuestring()) {
       total_size += 1 +
         ::google::protobuf::internal::WireFormatLite::BytesSize(
@@ -693,7 +719,7 @@ void vlogkeyvalue::CopyFrom(const vlogkeyvalue& from) {
 }
 
 bool vlogkeyvalue::IsInitialized() const {
-  if ((_has_bits_[0] & 0x0000000f) != 0x0000000f) return false;
+  if ((_has_bits_[0] & 0x00000003) != 0x00000003) return false;
 
   return true;
 }
@@ -715,6 +741,251 @@ void vlogkeyvalue::Swap(vlogkeyvalue* other) {
   ::google::protobuf::Metadata metadata;
   metadata.descriptor = vlogkeyvalue_descriptor_;
   metadata.reflection = vlogkeyvalue_reflection_;
+  return metadata;
+}
+
+
+// ===================================================================
+
+#ifndef _MSC_VER
+const int kvsize::kKeysizeFieldNumber;
+const int kvsize::kValuesizeFieldNumber;
+#endif  // !_MSC_VER
+
+kvsize::kvsize()
+  : ::google::protobuf::Message() {
+  SharedCtor();
+}
+
+void kvsize::InitAsDefaultInstance() {
+}
+
+kvsize::kvsize(const kvsize& from)
+  : ::google::protobuf::Message() {
+  SharedCtor();
+  MergeFrom(from);
+}
+
+void kvsize::SharedCtor() {
+  _cached_size_ = 0;
+  keysize_ = GOOGLE_ULONGLONG(0);
+  valuesize_ = GOOGLE_ULONGLONG(0);
+  ::memset(_has_bits_, 0, sizeof(_has_bits_));
+}
+
+kvsize::~kvsize() {
+  SharedDtor();
+}
+
+void kvsize::SharedDtor() {
+  if (this != default_instance_) {
+  }
+}
+
+void kvsize::SetCachedSize(int size) const {
+  GOOGLE_SAFE_CONCURRENT_WRITES_BEGIN();
+  _cached_size_ = size;
+  GOOGLE_SAFE_CONCURRENT_WRITES_END();
+}
+const ::google::protobuf::Descriptor* kvsize::descriptor() {
+  protobuf_AssignDescriptorsOnce();
+  return kvsize_descriptor_;
+}
+
+const kvsize& kvsize::default_instance() {
+  if (default_instance_ == NULL) protobuf_AddDesc_newdb_2eoffset_2eproto();
+  return *default_instance_;
+}
+
+kvsize* kvsize::default_instance_ = NULL;
+
+kvsize* kvsize::New() const {
+  return new kvsize;
+}
+
+void kvsize::Clear() {
+  if (_has_bits_[0 / 32] & (0xffu << (0 % 32))) {
+    keysize_ = GOOGLE_ULONGLONG(0);
+    valuesize_ = GOOGLE_ULONGLONG(0);
+  }
+  ::memset(_has_bits_, 0, sizeof(_has_bits_));
+  mutable_unknown_fields()->Clear();
+}
+
+bool kvsize::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!(EXPRESSION)) return false
+  ::google::protobuf::uint32 tag;
+  while ((tag = input->ReadTag()) != 0) {
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // required fixed64 keysize = 1;
+      case 1: {
+        if (::google::protobuf::internal::WireFormatLite::GetTagWireType(tag) ==
+            ::google::protobuf::internal::WireFormatLite::WIRETYPE_FIXED64) {
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   ::google::protobuf::uint64, ::google::protobuf::internal::WireFormatLite::TYPE_FIXED64>(
+                 input, &keysize_)));
+          set_has_keysize();
+        } else {
+          goto handle_uninterpreted;
+        }
+        if (input->ExpectTag(17)) goto parse_valuesize;
+        break;
+      }
+
+      // required fixed64 valuesize = 2;
+      case 2: {
+        if (::google::protobuf::internal::WireFormatLite::GetTagWireType(tag) ==
+            ::google::protobuf::internal::WireFormatLite::WIRETYPE_FIXED64) {
+         parse_valuesize:
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   ::google::protobuf::uint64, ::google::protobuf::internal::WireFormatLite::TYPE_FIXED64>(
+                 input, &valuesize_)));
+          set_has_valuesize();
+        } else {
+          goto handle_uninterpreted;
+        }
+        if (input->ExpectAtEnd()) return true;
+        break;
+      }
+
+      default: {
+      handle_uninterpreted:
+        if (::google::protobuf::internal::WireFormatLite::GetTagWireType(tag) ==
+            ::google::protobuf::internal::WireFormatLite::WIRETYPE_END_GROUP) {
+          return true;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+  return true;
+#undef DO_
+}
+
+void kvsize::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // required fixed64 keysize = 1;
+  if (has_keysize()) {
+    ::google::protobuf::internal::WireFormatLite::WriteFixed64(1, this->keysize(), output);
+  }
+
+  // required fixed64 valuesize = 2;
+  if (has_valuesize()) {
+    ::google::protobuf::internal::WireFormatLite::WriteFixed64(2, this->valuesize(), output);
+  }
+
+  if (!unknown_fields().empty()) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        unknown_fields(), output);
+  }
+}
+
+::google::protobuf::uint8* kvsize::SerializeWithCachedSizesToArray(
+    ::google::protobuf::uint8* target) const {
+  // required fixed64 keysize = 1;
+  if (has_keysize()) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFixed64ToArray(1, this->keysize(), target);
+  }
+
+  // required fixed64 valuesize = 2;
+  if (has_valuesize()) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFixed64ToArray(2, this->valuesize(), target);
+  }
+
+  if (!unknown_fields().empty()) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        unknown_fields(), target);
+  }
+  return target;
+}
+
+int kvsize::ByteSize() const {
+  int total_size = 0;
+
+  if (_has_bits_[0 / 32] & (0xffu << (0 % 32))) {
+    // required fixed64 keysize = 1;
+    if (has_keysize()) {
+      total_size += 1 + 8;
+    }
+
+    // required fixed64 valuesize = 2;
+    if (has_valuesize()) {
+      total_size += 1 + 8;
+    }
+
+  }
+  if (!unknown_fields().empty()) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        unknown_fields());
+  }
+  GOOGLE_SAFE_CONCURRENT_WRITES_BEGIN();
+  _cached_size_ = total_size;
+  GOOGLE_SAFE_CONCURRENT_WRITES_END();
+  return total_size;
+}
+
+void kvsize::MergeFrom(const ::google::protobuf::Message& from) {
+  GOOGLE_CHECK_NE(&from, this);
+  const kvsize* source =
+    ::google::protobuf::internal::dynamic_cast_if_available<const kvsize*>(
+      &from);
+  if (source == NULL) {
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+    MergeFrom(*source);
+  }
+}
+
+void kvsize::MergeFrom(const kvsize& from) {
+  GOOGLE_CHECK_NE(&from, this);
+  if (from._has_bits_[0 / 32] & (0xffu << (0 % 32))) {
+    if (from.has_keysize()) {
+      set_keysize(from.keysize());
+    }
+    if (from.has_valuesize()) {
+      set_valuesize(from.valuesize());
+    }
+  }
+  mutable_unknown_fields()->MergeFrom(from.unknown_fields());
+}
+
+void kvsize::CopyFrom(const ::google::protobuf::Message& from) {
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void kvsize::CopyFrom(const kvsize& from) {
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool kvsize::IsInitialized() const {
+  if ((_has_bits_[0] & 0x00000003) != 0x00000003) return false;
+
+  return true;
+}
+
+void kvsize::Swap(kvsize* other) {
+  if (other != this) {
+    std::swap(keysize_, other->keysize_);
+    std::swap(valuesize_, other->valuesize_);
+    std::swap(_has_bits_[0], other->_has_bits_[0]);
+    _unknown_fields_.Swap(&other->_unknown_fields_);
+    std::swap(_cached_size_, other->_cached_size_);
+  }
+}
+
+::google::protobuf::Metadata kvsize::GetMetadata() const {
+  protobuf_AssignDescriptorsOnce();
+  ::google::protobuf::Metadata metadata;
+  metadata.descriptor = kvsize_descriptor_;
+  metadata.reflection = kvsize_reflection_;
   return metadata;
 }
 
