@@ -15,6 +15,15 @@
 #include "newdb.offset.pb.h"
 
 
+//VLOG FORMAT
+//------------------------------------
+//|keysize | valuesize | key | value |
+//------------------------------------
+
+//ROCKSDB STRUCT
+//----------------------------------------
+//only newdb::dboffset is stored as value|
+//----------------------------------------
 static const int Vlogsize = 1<<8;
 static bool syncflag = false;
 using namespace std;
@@ -75,6 +84,21 @@ int destroydb()
 {
   rocksdb::Options options;
   rocksdb::DestroyDB(kDBPath.c_str(), options);
+}
+
+//wrapper of rocksdb::DB::Delete
+int dbdelete(string key)
+{
+  rocksdb::WriteOptions woptions;
+  woptions.sync = syncflag;
+
+  rocksdb::Status s = db->Delete(woptions, key);
+
+  assert(s.ok());
+  if (s.ok())
+    return 0;
+
+  return -1;
 }
 
 //wrapper of rocksdb::DB::Put
@@ -164,6 +188,13 @@ int vlog_read(const string &key, string &value, int offset, int length)
   return 0;
 }
 
+//delete key from db, note that we donot free space from vlog now
+//disk space can be freed by vlog compact routine.
+int Vlog_Delete(string key)
+{
+  return dbdelete(key);  
+}
+//get value from vlog
 int Vlog_Get(string key, string &value)
 {
   string encodedOffset;
@@ -229,6 +260,19 @@ void TEST_readwrite()
   }
 }
 
+void TEST_writedelete()
+{
+  restartEnv();
+
+  string value(1024,'c'); 
+  for(int i =0; i < testkeys; i++)
+  {
+    string key = to_string(rand());
+    Vlog_Put(key, value);
+    Vlog_Delete(key);
+    //Vlog_Get(key, value);
+  }
+}
 
 void TEST_testprotobuf(string a, int length, int offset)
 {
@@ -258,7 +302,7 @@ void TEST_protobuf()
   }
 }
 
-void searchtest()
+void TEST_search()
 {
   initEnv();
   string value;
@@ -296,6 +340,7 @@ int main(int argc, char **argv)
   //TEST_readwrite();
   //searchtest();
   processoptions(argc, argv);
-  TEST_readwrite();
+  //TEST_readwrite();
+  TEST_writedelete();
   return 0;
 }
