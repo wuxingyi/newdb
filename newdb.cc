@@ -47,6 +47,7 @@ static rocksdb::DB* db = nullptr;
 static FILE *vlogFile = NULL;
 static int vlogOffset = 0;
 static int testkeys = 10000;
+static int vlogFileSize = 0;
 
 //fixed length of keysize+valuesize
 static const int VlogFixedLen = 16;
@@ -314,10 +315,22 @@ int Vlog_Put(string key, string value)
   return 0;
 }
 
-void Vlog_Traverse()
+
+void getVlogFileSize()
 {
-  //we start from the 0 offset
-  int vlogoffset = 0;        
+  int fd=fileno(vlogFile);  
+  struct stat fileStat;  
+  if( -1 == fstat(fd, &fileStat))  
+  {  
+	return -1;  
+  }  
+ 
+  // deal returns.  
+  vlogFileSize = fileStat.st_size;  
+}
+
+void Vlog_Traverse(int vlogoffset)
+{
   char p[VlogFixedLen];
 
   fseek(vlogFile, vlogoffset, SEEK_SET);
@@ -331,6 +344,10 @@ void Vlog_Traverse()
 
   cout << kv.keysize() << endl;
   cout << kv.valuesize() << endl;
+
+  int nextoffset = VlogFixedLen + kv.keysize() + kv.valuesize();
+  while (nextoffset < vlogFileSize)
+	Vlog_Traverse(newoffset);
 }
 void restartEnv()
 {
@@ -439,6 +456,7 @@ int main(int argc, char **argv)
   TEST_readwrite();
   //TEST_writedelete();
   //initEnv();
-  //Vlog_Traverse();
+  getVlogFileSize();
+  Vlog_Traverse(0);
   return 0;
 }
