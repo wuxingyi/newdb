@@ -3,3 +3,4 @@
 3.implement vlog compact
 4.write more vlog files
 5.compatible with rocksdb interfaces
+6.implement delete key
