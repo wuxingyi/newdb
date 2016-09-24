@@ -48,9 +48,13 @@ static FILE *vlogFile = NULL;
 static int vlogOffset = 0;
 static int testkeys = 10000;
 static int vlogFileSize = 0;
+static int traversedKey = 0;
+static int totalkeys = 0;
 
-//fixed length of keysize+valuesize
-static const int VlogFixedLen = 16;
+//fixed length of keysize+valuesize, porobuff add another 6 bytpes to tow fixed64
+//so the VlogFixedLen is 2*8 + 6 = 22
+//which is really buggy
+static const int VlogFixedLen = 22;
 
 int dbinit();
 
@@ -205,6 +209,7 @@ int encodeVlogEntry(const string &key, const string &value, string &outstring)
   kv.set_keystring(key);
   kv.set_valuestring(value);
 
+  cout << "kv.ByteSize() is  " << kv.ByteSize() << endl;
   encodeVlogkeyvalue(kv, outstring);
 
   return 0;
@@ -217,8 +222,11 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
 
   keysize = kv.keysize();
   valuesize = kv.valuesize();
-  key = kv.keystring();
-  value = kv.valuestring();
+
+  if (kv.has_keystring())
+    key = kv.keystring();
+  if (kv.has_valuestring())
+    value = kv.valuestring();
 
   return 0;
 }
@@ -322,32 +330,48 @@ void getVlogFileSize()
   struct stat fileStat;  
   if( -1 == fstat(fd, &fileStat))  
   {  
-	return -1;  
+    return; 
   }  
  
   // deal returns.  
   vlogFileSize = fileStat.st_size;  
+  cout << "vlogFileSize is " << vlogFileSize << endl;
 }
+
+static int  nextoffset = 0;
 
 void Vlog_Traverse(int vlogoffset)
 {
+  assert(NULL != vlogFile);
+
+  cout << "offset is " << vlogoffset << endl;
   char p[VlogFixedLen];
 
   fseek(vlogFile, vlogoffset, SEEK_SET);
   size_t readsize = fread(p, 1, VlogFixedLen, vlogFile);
   
+  //char p[vlogFileSize];
+
+  //fseek(vlogFile, vlogoffset, SEEK_SET);
+  //size_t readsize = fread(p, 1, vlogFileSize, vlogFile);
   cout << "read " << readsize << " bytes from vlog"<< endl;
 
   newdb::vlogkeyvalue kv;
   string kvstring(p, VlogFixedLen);
-  decodeVlogkeyvalue(kv, kvstring);
+  
+  string readkey, value;
+  int keysize, valuesize;
 
-  cout << kv.keysize() << endl;
-  cout << kv.valuesize() << endl;
+  //value is actually a vlogkeyvalue struct, so we should decode it
+  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value);
+  cout << keysize << endl;
+  cout << valuesize << endl;
+  traversedKey++;
 
-  int nextoffset = VlogFixedLen + kv.keysize() + kv.valuesize();
-  while (nextoffset < vlogFileSize)
-	Vlog_Traverse(newoffset);
+  nextoffset = vlogoffset + VlogFixedLen + keysize + valuesize + 1;
+  //if (nextoffset < vlogFileSize && (3 + nextoffset < vlogFileSize))
+  if (traversedKey < totalkeys)
+	Vlog_Traverse(nextoffset);
 }
 void restartEnv()
 {
@@ -362,10 +386,11 @@ void TEST_readwrite()
   for(int i =0; i < testkeys; i++)
   {
     int num = rand();
-    string value(100,'c'); 
+    string value(num/10000000,'c'); 
     string key = to_string(num);
     cout << "before Put: key is " << key << ", value is " <<  value << endl;
     Vlog_Put(key, value);
+    totalkeys++;
     value.clear();
     Vlog_Get(key, value);
     cout << "after  Get: key is " << key << ", value is " << value << endl;
@@ -448,15 +473,41 @@ int processoptions(int argc, char **argv)
   testkeys = vm["keys"].as<int>();
   return 0;
 }
+
+struct kv
+{
+  int64_t keysize = 1;
+  int64_t valuesize = 4;
+};
+void TEST_memcpy()
+{
+  struct kv kv1;
+  cout << kv1.keysize << " , " << kv1.valuesize << endl;
+  char p[sizeof(kv1)];
+  memcpy(p, &kv1, sizeof(kv1));
+  int writesize = fwrite(p, 1, sizeof(kv1), vlogFile);
+
+  assert(writesize == sizeof(kv1));
+  
+  struct kv *kv2;
+  fseek(vlogFile, 0, SEEK_SET);
+  size_t readsize = fread(p, 1, sizeof(kv1), vlogFile);
+
+  kv2 = (kv *)p;
+  cout << kv2->keysize << " , " << kv2->valuesize << endl;
+}
 int main(int argc, char **argv) 
 {
   //TEST_readwrite();
   //searchtest();
-  processoptions(argc, argv);
-  TEST_readwrite();
-  //TEST_writedelete();
-  //initEnv();
-  getVlogFileSize();
-  Vlog_Traverse(0);
+  //processoptions(argc, argv);
+  //TEST_readwrite();
+  ////TEST_writedelete();
+  ////initEnv();
+  //getVlogFileSize();
+  //Vlog_Traverse(0);
+  //cout << "we got " << traversedKey << " keys"<< endl;
+  restartEnv();
+  TEST_memcpy();
   return 0;
 }

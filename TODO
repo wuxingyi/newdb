@@ -6,3 +6,4 @@
 6.implement delete key
 7.add batch api
 8.add interface to manage vlog entries
+9.protobuf is really buggy, drop it

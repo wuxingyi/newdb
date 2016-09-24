@@ -7,9 +7,9 @@ message dboffset
 
 message vlogkeyvalue
 {
-  required int64 keysize = 1;
-  required int64 valuesize = 2;
-  optional bytes keystring = 3;
-  optional bytes valuestring = 4;
+  required fixed64 keysize = 1;
+  required fixed64 valuesize = 2;
+  required string keystring = 3;
+  required string valuestring = 4;
 }
 
