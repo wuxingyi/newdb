@@ -12,7 +12,7 @@ endif
 
 all: newdb flushtosst
 
-newdb: newdb.cc newdb.offset.pb.cc 
+newdb: newdb.cc
 	$(CXX) $(CXXFLAGS) $@.cc -g -o$@ ../librocksdb.a -lboost_program_options -I../include -O2 -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 flushtosst: flushtosst.cc
