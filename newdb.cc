@@ -12,22 +12,13 @@
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/options.h"
-#include "newdb.offset.pb.h"
-
 
 /*
 VLOG FORMAT
-note that keyszie and valuesize is fixed size, always take 8+8 bytes.
+note that keyszie and valuesize is fixed size, always take 4+4+8=16 bytes.
 definiton of message vlogkeyvalue:
 we set keystring and valuestring as optional because we will decode 
 keysize and valuesize.
-message vlogkeyvalue
-{
-  required fixed64 keysize = 1;
-  required fixed64 valuesize = 2;
-  optional bytes keystring = 3;
-  optional bytes valuestring = 4;
-}
 ------------------------------------
 |keysize | valuesize | key | value |
 ------------------------------------
@@ -35,7 +26,7 @@ message vlogkeyvalue
 
 //ROCKSDB STRUCT
 //----------------------------------------
-//only newdb::dboffset is stored as value|
+//only dboffset is stored as value|
 //----------------------------------------
 static const int Vlogsize = 1<<8;
 static bool syncflag = false;
@@ -51,51 +42,53 @@ static int vlogFileSize = 0;
 static int traversedKey = 0;
 static int totalkeys = 0;
 
+//finally we drop protobuf
 //fixed length of keysize+valuesize, porobuff add another 6 bytpes to tow fixed64
 //so the VlogFixedLen is 2*8 + 6 = 22
 //which is really buggy
-static const int VlogFixedLen = 22;
+//static const int VlogFixedLen = 22;
+
+//it's crazy to have a key/value bigger than 4GB:)
+//a key/value string is followed by a VlogOndiskEntry struct
+struct VlogOndiskEntry
+{
+  int32_t keysize = 0;
+  int32_t valuesize = 0;
+  int64_t magic = 0x007;
+  VlogOndiskEntry(int32_t keysize_, int32_t valuesize_):keysize(keysize_),valuesize(valuesize_){}
+};
+
+struct dboffset
+{
+  int64_t length;
+  int64_t offset;
+  dboffset(int offset_, int length_):length(length_),offset(offset_){}
+};
 
 int dbinit();
 
-struct dbOffset
+
+//encode a dboffset struct into a string
+void encodeOffset(const dboffset &dbo, string &outstring)
 {
-  char *key;
-  int offset;  
-  dbOffset():key(0),offset(0){}
-};
+  size_t size = sizeof(dbo);
+  char p[size];
 
-struct VlogItem {
-  newdb::dboffset dbo;
-};
-
-struct VlogItem_protobuf {
-  newdb::dboffset dbo;
-};
-
-//encode a newdb::dboffset struct into a string
-void encodeOffset(const newdb::dboffset &dbo, string &outstring)
-{
-  dbo.SerializeToString(&outstring);
+  memcpy(p, (char *) &dbo, size);
+  
+  //this is ugly, but we cannot use `outstring = p` because p is not
+  //necessarily null-terminated.
+  string temps(p, size);
+  outstring = p;
 }
 
-//decode a string into a newdb::dboffset struct
-void decodeOffset(newdb::dboffset &dbo, const string &instring)
+//decode a string into a dboffset struct
+void decodeOffset(dboffset &dbo, const string &instring)
 {
-  dbo.ParseFromString(instring);
+  memcpy((char *)&dbo, instring.data(), sizeof(dbo));
 }
 
-//encode a newdb::vlogkeyvalue struct into a string
-void encodeVlogkeyvalue(const newdb::vlogkeyvalue &vlogkeyvalue, string &outstring)
-{
-  vlogkeyvalue.SerializeToString(&outstring);
-}
 
-//decode a string into a newdb::vlogkeyvalue struct
-void decodeVlogkeyvalue(newdb::vlogkeyvalue &vlogkeyvalue, const string &instring)
-{
-  vlogkeyvalue.ParseFromString(instring);
-}
 void removeVlog()
 {
   remove(kDBVlog.c_str());  
@@ -192,41 +185,43 @@ void initEnv()
   createVlogfile();
 }
 
-int encodeDboffset(int offset , int length, string &outstring)
-{
-  newdb::dboffset dbo;
-  dbo.set_length(length);
-  dbo.set_offset(offset);
-  encodeOffset(dbo, outstring);
 
-  return 0;
-}
+//@outstring is going to write to Vlog after a VlogOndiskEntry struct
 int encodeVlogEntry(const string &key, const string &value, string &outstring)
 {
-  newdb::vlogkeyvalue kv;
-  kv.set_keysize(key.size());
-  kv.set_valuesize(value.size());
-  kv.set_keystring(key);
-  kv.set_valuestring(value);
+  VlogOndiskEntry fixedentry(key.size(), value.size());
 
-  cout << "kv.ByteSize() is  " << kv.ByteSize() << endl;
-  encodeVlogkeyvalue(kv, outstring);
+  int size = sizeof(fixedentry);
+  char p[size];
+  memcpy(p, &fixedentry, size);
+  string temp(p, size);
+
+  outstring = temp + key + value;
 
   return 0;
 }
 
-int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string &key, string &value)
+//@needstring  is used because sometimes we donot need the string
+int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string &key, string &value, bool needstring)
 {
-  newdb::vlogkeyvalue kv;
-  decodeVlogkeyvalue(kv, instring);
+  VlogOndiskEntry *pfixedentry;
 
-  keysize = kv.keysize();
-  valuesize = kv.valuesize();
+  int size = sizeof(VlogOndiskEntry);
+  char p[size];
+  memcpy(p, instring.data(), size);
 
-  if (kv.has_keystring())
-    key = kv.keystring();
-  if (kv.has_valuestring())
-    value = kv.valuestring();
+  pfixedentry = (VlogOndiskEntry *)p;
+  keysize = pfixedentry->keysize;
+  valuesize = pfixedentry->valuesize;
+
+  if (needstring)
+  {
+    string tempkey(instring.data() + size, keysize);
+    string tempvalue(instring.data() + keysize + size, valuesize);
+
+    key = tempkey;
+    value = tempvalue;
+  }
 
   return 0;
 }
@@ -262,7 +257,7 @@ int vlog_read(const string &key, string &value, int offset, int length)
   int keysize, valuesize;
 
   //value is actually a vlogkeyvalue struct, so we should decode it
-  decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value);
+  decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value, true);
   assert(readkey == key);
   return 0;
 }
@@ -281,20 +276,21 @@ int Vlog_Get(string key, string &value)
 
   assert(0 == ret);
 
-  newdb::dboffset dbo;
+  dboffset dbo(0, 0);
   decodeOffset(dbo, encodedOffset);
-  vlog_read(key, value, dbo.offset(), dbo.length());
+  vlog_read(key, value, dbo.offset, dbo.length);
 }
 
 //store a key/value pair to wisckeydb
-//note the key/newdb::dboffset is stored to rocksdb
+//note the key/dboffset is stored to rocksdb
 //but vlaue is stored by us using vlog 
 int Vlog_Put(string key, string value)
 {
   string Vlogstring, dboffsetstring;
   int ret = encodeVlogEntry(key, value, Vlogstring);
 
-  encodeDboffset(vlogOffset, Vlogstring.size(), dboffsetstring);
+  //total length for a entry is vode_size + Vlogstring_size
+  encodeOffset(dboffset(vlogOffset, Vlogstring.size()), dboffsetstring);
 
   ret = dbput(key, dboffsetstring);
   if (0 != ret)
@@ -345,34 +341,42 @@ void Vlog_Traverse(int vlogoffset)
   assert(NULL != vlogFile);
 
   cout << "offset is " << vlogoffset << endl;
-  char p[VlogFixedLen];
+  int fixedsize = sizeof(VlogOndiskEntry);
+  char p[fixedsize];
 
   fseek(vlogFile, vlogoffset, SEEK_SET);
-  size_t readsize = fread(p, 1, VlogFixedLen, vlogFile);
-  
-  //char p[vlogFileSize];
-
-  //fseek(vlogFile, vlogoffset, SEEK_SET);
-  //size_t readsize = fread(p, 1, vlogFileSize, vlogFile);
+  size_t readsize = fread(p, 1, fixedsize, vlogFile);
   cout << "read " << readsize << " bytes from vlog"<< endl;
-
-  newdb::vlogkeyvalue kv;
-  string kvstring(p, VlogFixedLen);
   
   string readkey, value;
   int keysize, valuesize;
+  string kvstring(p, readsize);
 
-  //value is actually a vlogkeyvalue struct, so we should decode it
-  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value);
+  //we can not get key/value now.
+  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value, false);
   cout << keysize << endl;
   cout << valuesize << endl;
-  traversedKey++;
 
-  nextoffset = vlogoffset + VlogFixedLen + keysize + valuesize + 1;
-  //if (nextoffset < vlogFileSize && (3 + nextoffset < vlogFileSize))
-  if (traversedKey < totalkeys)
-	Vlog_Traverse(nextoffset);
+  //now we can get the key/value. 
+  char readkeybuffer[keysize];
+  fseek(vlogFile, vlogoffset + fixedsize, SEEK_SET);
+  readsize = fread(readkeybuffer, 1, keysize, vlogFile);
+
+  string keystring(readkeybuffer, keysize);
+  cout << "key is " << keystring << endl;
+
+  char readvaluebuffer[valuesize];
+  fseek(vlogFile, vlogoffset + fixedsize + keysize, SEEK_SET);
+  readsize = fread(readvaluebuffer, 1, valuesize, vlogFile);
+  string valuestring(readvaluebuffer, valuesize);
+  cout << "value is " << valuestring << endl;
+
+  traversedKey++;
+  nextoffset = vlogoffset + fixedsize + keysize + valuesize;
+  if (nextoffset < vlogFileSize)
+    Vlog_Traverse(nextoffset);
 }
+
 void restartEnv()
 {
   clearEnv();
@@ -388,12 +392,15 @@ void TEST_readwrite()
     int num = rand();
     string value(num/10000000,'c'); 
     string key = to_string(num);
-    cout << "before Put: key is " << key << ", value is " <<  value << endl;
+    
+    cout << "before Put: key is " << key << ", value is " <<  value 
+         << " key length is " << key.size() << ", value length is " << value.size() << endl;
     Vlog_Put(key, value);
     totalkeys++;
     value.clear();
     Vlog_Get(key, value);
-    cout << "after  Get: key is " << key << ", value is " << value << endl;
+    cout << "after  Get: key is " << key << ", value is " << value 
+         << " key length is " << key.size() << ", value length is " << value.size() << endl;
     cout << "---------------------------------------------------" << endl;
   }
 }
@@ -409,34 +416,6 @@ void TEST_writedelete()
     Vlog_Put(key, value);
     Vlog_Delete(key);
     //Vlog_Get(key, value);
-  }
-}
-
-void TEST_testprotobuf(string a, int length, int offset)
-{
-  newdb::dboffset dbo;
-  string inputstring;
-  dbo.set_length(length);
-  dbo.set_offset(offset);
-  encodeOffset(dbo, inputstring);
-  
-  cout << dbo.length() << ", " << dbo.offset() << endl;
-  dbput(a, inputstring);
-
-  string c;
-  dbget(a, c);
-  
-  decodeOffset(dbo, c);
-  cout << dbo.length() << ", " << dbo.offset() << endl;
-}
-
-void TEST_protobuf()
-{
-  restartEnv();
-
-  for(int i =0; i < testkeys; i++)
-  {
-    TEST_testprotobuf(to_string(rand()), rand(), rand());
   }
 }
 
@@ -474,40 +453,19 @@ int processoptions(int argc, char **argv)
   return 0;
 }
 
-struct kv
-{
-  int64_t keysize = 1;
-  int64_t valuesize = 4;
-};
-void TEST_memcpy()
-{
-  struct kv kv1;
-  cout << kv1.keysize << " , " << kv1.valuesize << endl;
-  char p[sizeof(kv1)];
-  memcpy(p, &kv1, sizeof(kv1));
-  int writesize = fwrite(p, 1, sizeof(kv1), vlogFile);
 
-  assert(writesize == sizeof(kv1));
-  
-  struct kv *kv2;
-  fseek(vlogFile, 0, SEEK_SET);
-  size_t readsize = fread(p, 1, sizeof(kv1), vlogFile);
-
-  kv2 = (kv *)p;
-  cout << kv2->keysize << " , " << kv2->valuesize << endl;
-}
 int main(int argc, char **argv) 
 {
   //TEST_readwrite();
   //searchtest();
-  //processoptions(argc, argv);
+  processoptions(argc, argv);
   //TEST_readwrite();
   ////TEST_writedelete();
-  ////initEnv();
-  //getVlogFileSize();
-  //Vlog_Traverse(0);
+  initEnv();
+  getVlogFileSize();
+  Vlog_Traverse(0);
   //cout << "we got " << traversedKey << " keys"<< endl;
-  restartEnv();
-  TEST_memcpy();
+  //restartEnv();
+  //TEST_memcpy();
   return 0;
 }
