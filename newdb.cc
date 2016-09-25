@@ -3,6 +3,11 @@
 // LICENSE file in the root directory of this source tree. An additional grant
 // of patent rights can be found in the PATENTS file in the same directory.
 // wuxingyi@le.com
+// vimrc
+// set expandtab
+// set ts=8
+// set sw=2
+// set smarttab
 #include <cstdio>
 #include <string>
 #include <iostream>
@@ -34,13 +39,16 @@ using namespace std;
 
 const std::string kDBPath = "/home/wuxingyi/rocksdb/newdb/DBDATA/ROCKSDB";
 const std::string kDBVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/Vlog";
+const std::string kDBCompactedVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/CompactedVlog";
 static rocksdb::DB* db = nullptr;
 static FILE *vlogFile = NULL;
+static FILE *compactedVlogFile = NULL;
 static int vlogOffset = 0;
 static int testkeys = 10000;
 static int vlogFileSize = 0;
 static int traversedKey = 0;
 static int totalkeys = 0;
+static int64_t compactTailOffset = 0;
 
 //finally we drop protobuf
 //fixed length of keysize+valuesize, porobuff add another 6 bytpes to tow fixed64
@@ -55,23 +63,36 @@ struct VlogOndiskEntry
   int32_t keysize = 0;
   int32_t valuesize = 0;
   int64_t magic = 0x007;
-  VlogOndiskEntry(int32_t keysize_, int32_t valuesize_):keysize(keysize_),valuesize(valuesize_){}
+  VlogOndiskEntry(int32_t keysize_, int32_t valuesize_):keysize(keysize_),
+                                                        valuesize(valuesize_){}
 };
 
 struct dboffset
 {
-  int64_t length;
-  int64_t offset;
-  dboffset(int offset_, int length_):length(length_),offset(offset_){}
+  int64_t offset = 0;
+  int64_t length = 0;
+  dboffset(int offset_, int length_):offset(offset_), length(length_){}
 };
 
+//we should write the progress of compaction to rocksdb
+//both tail_offset and head_offset are offset to the start of original vlog.
+//#tail_offset is the start of compaction.
+struct compactOffset
+{
+  int64_t tail_offset;
+  int64_t head_offset;
+  compactOffset(int tail_offset_, int head_offset_):tail_offset(tail_offset_),
+                                               head_offset(head_offset_){}
+};
 int dbinit();
 
 
 //encode a dboffset struct into a string
 void encodeOffset(const dboffset &dbo, string &outstring)
 {
-  size_t size = sizeof(dbo);
+  cout  << __func__ << " dbo offset is " << dbo.offset << endl;
+  cout  << __func__ << " dbo length is " << dbo.length << endl;
+  size_t size = sizeof(struct dboffset);
   char p[size];
 
   memcpy(p, (char *) &dbo, size);
@@ -85,13 +106,37 @@ void encodeOffset(const dboffset &dbo, string &outstring)
 //decode a string into a dboffset struct
 void decodeOffset(dboffset &dbo, const string &instring)
 {
-  memcpy((char *)&dbo, instring.data(), sizeof(dbo));
+  memcpy((char *)&dbo, instring.c_str(), sizeof(struct dboffset));
+  cout  << __func__ << " dbo offset is " << dbo.offset << endl;
+  cout  << __func__ << " dbo length is " << dbo.length << endl;
 }
 
+//encode a compactOffset struct into a string
+void encodeCompactOffset(const compactOffset &dbo, string &outstring)
+{
+  size_t size = sizeof(struct compactOffset);
+  char p[size];
 
+  memcpy(p, (char *) &dbo, size);
+  
+  //this is ugly, but we cannot use `outstring = p` because p is not
+  //necessarily null-terminated.
+  string temps(p, size);
+  outstring = p;
+}
+
+//decode a string into a compactOffset struct
+void decodeCompactOffset(compactOffset &dbo, const string &instring)
+{
+  memcpy((char *)&dbo, instring.data(), sizeof(struct compactOffset));
+}
 void removeVlog()
 {
   remove(kDBVlog.c_str());  
+}
+void removeCompactedVlog()
+{
+  remove(kDBCompactedVlog.c_str());  
 }
 
 int createVlogfile()
@@ -100,6 +145,17 @@ int createVlogfile()
   {
     vlogFile = fopen(kDBVlog.c_str(), "a+");
     assert(NULL != vlogFile); 
+    return 0;
+  }
+  return -1;
+}
+
+int createCompactedVlogfile()
+{
+  if (NULL == compactedVlogFile)
+  {
+    compactedVlogFile = fopen(kDBCompactedVlog.c_str(), "a+");
+    assert(NULL != compactedVlogFile); 
     return 0;
   }
   return -1;
@@ -176,6 +232,7 @@ void clearEnv()
 {
   destroydb();  
   removeVlog();
+  removeCompactedVlog();
 }
 
 void initEnv()
@@ -183,6 +240,7 @@ void initEnv()
   int dir_err = mkdir("DBDATA", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
   dbinit();
   createVlogfile();
+  createCompactedVlogfile();
 }
 
 
@@ -191,13 +249,12 @@ int encodeVlogEntry(const string &key, const string &value, string &outstring)
 {
   VlogOndiskEntry fixedentry(key.size(), value.size());
 
-  int size = sizeof(fixedentry);
+  int size = sizeof(struct VlogOndiskEntry);
   char p[size];
   memcpy(p, &fixedentry, size);
   string temp(p, size);
 
   outstring = temp + key + value;
-
   return 0;
 }
 
@@ -206,7 +263,7 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
 {
   VlogOndiskEntry *pfixedentry;
 
-  int size = sizeof(VlogOndiskEntry);
+  int size = sizeof(struct VlogOndiskEntry);
   char p[size];
   memcpy(p, instring.data(), size);
 
@@ -226,10 +283,9 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
   return 0;
 }
 
-//@key is used now
-int vlog_write(int offset, const string &kvstring)
+int vlog_write(FILE *vlogFileFd, int offset, const string &kvstring)
 {
-  assert(NULL != vlogFile);
+  assert(NULL != vlogFileFd);
   
   //cout << __func__ << " kvstring length is " << kvstring.size() << endl;
   fseek(vlogFile, offset, SEEK_SET);
@@ -241,12 +297,11 @@ int vlog_write(int offset, const string &kvstring)
 }
 
 //reading a value from vlog, note that we know the offset and length
-//@key is currently not used 
-int vlog_read(const string &key, string &value, int offset, int length)
+int vlog_read(FILE *vlogFileFd, const string &key, string &value, int offset, int length)
 {
-  assert(NULL != vlogFile);
+  assert(NULL != vlogFileFd);
   
-  fseek(vlogFile, offset, SEEK_SET);
+  fseek(vlogFileFd, offset, SEEK_SET);
 
   //add a terminal null
   char p[length];
@@ -256,7 +311,6 @@ int vlog_read(const string &key, string &value, int offset, int length)
   string readkey;
   int keysize, valuesize;
 
-  //value is actually a vlogkeyvalue struct, so we should decode it
   decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value, true);
   assert(readkey == key);
   return 0;
@@ -274,11 +328,14 @@ int Vlog_Get(string key, string &value)
   string encodedOffset;
   int ret = dbget(key, encodedOffset);
 
-  assert(0 == ret);
+  //assert(0 == ret);
+  if (0 != ret)
+    return ret;
 
   dboffset dbo(0, 0);
   decodeOffset(dbo, encodedOffset);
-  vlog_read(key, value, dbo.offset, dbo.length);
+  vlog_read(vlogFile, key, value, dbo.offset, dbo.length);
+  return 0;
 }
 
 //store a key/value pair to wisckeydb
@@ -289,8 +346,13 @@ int Vlog_Put(string key, string value)
   string Vlogstring, dboffsetstring;
   int ret = encodeVlogEntry(key, value, Vlogstring);
 
-  //total length for a entry is vode_size + Vlogstring_size
-  encodeOffset(dboffset(vlogOffset, Vlogstring.size()), dboffsetstring);
+  //total length for a entry is Vlogstring_size
+  dboffset tempdbo(vlogOffset, Vlogstring.size());
+  encodeOffset(tempdbo, dboffsetstring);
+
+  dboffset tempdbo2(0, 0);
+  string tempstring2;
+  decodeOffset(tempdbo2, tempstring2);
 
   ret = dbput(key, dboffsetstring);
   if (0 != ret)
@@ -299,8 +361,6 @@ int Vlog_Put(string key, string value)
     return -1;
   }
 
-  int newoffset = 0;
-
   //note that there may be null terminal(because it's binary), so we should use
   //string::string (const char* s, size_t n) constructor
   //this is really buggy
@@ -308,7 +368,7 @@ int Vlog_Put(string key, string value)
 
   //cout << __func__ << " tempv length is " << tempv.size() << endl;
   //we write vlog here
-  ret = vlog_write(vlogOffset, tempv);
+  ret = vlog_write(vlogFile, vlogOffset, tempv);
   if (0 != ret)
   {
     cout << "write to vlog failed" << endl;
@@ -339,7 +399,7 @@ static int  nextoffset = 0;
 //get keysize/valuesize of an entry by offset
 void decodeEntryByOffset(int offset, int &keysize, int &valuesize)
 {
-  int fixedsize = sizeof(VlogOndiskEntry);
+  int fixedsize = sizeof(struct VlogOndiskEntry);
   char p[fixedsize];
 
   fseek(vlogFile, offset, SEEK_SET);
@@ -365,13 +425,26 @@ void decodePayloadByOffset(int offset, int size, string &outstring)
   string tempstring(readbuffer, size);
   outstring = tempstring;
 }
+
+//we can make a assumption that only after a Vlog file is completely
+//occupied should we start compaction, so actually we dono't need to
+//recode the head of original Vlog file, because it's invariable.
+void Vlog_StartCompat()
+{
+  //this is the enter point of compact routine  
+  compactOffset comoffset(0,0);
+  //comp
+  //TODO(wuxingyi): write comoffset to rocksdb
+}
 //now we start compact only from zero offset of vlog file.
 void Vlog_Compact(int vlogoffset)
 {
   assert(NULL != vlogFile);
+  assert(NULL != compactedVlogFile);
+
   cout << "offset is " << vlogoffset << endl;
   int keysize, valuesize;
-  int fixedsize = sizeof(VlogOndiskEntry);
+  int fixedsize = sizeof(struct VlogOndiskEntry);
 
   decodeEntryByOffset(vlogoffset, keysize, valuesize);
   
@@ -386,11 +459,53 @@ void Vlog_Compact(int vlogoffset)
   int ret = dbget(keystring, value);
   if (0 != ret)
   {
-	//it's already deleted,so the space must be freed. 
-	
+    //it's already deleted,so the space must be freed. 
+    //actually we do nothing here, because we append the exist entry
+    //to another new vlog file, as a entry should be deleted, we just
+    //ignore it and move to the next entry.
+    if (vlogoffset + fixedsize + keysize + valuesize < vlogFileSize)
+    {
+      Vlog_Compact(vlogoffset + fixedsize + keysize + valuesize);  
+    }
+    else
+    {
+      removeVlog();
+    }
   }
+  else
+  {
+    //it's still in the db, so we should copy the value to compacted Vlog
+    fseek(vlogFile, vlogoffset, SEEK_SET);
 
+    //add a terminal null
+    int length = fixedsize + keysize + valuesize; 
+    char p[length];
+    size_t readsize = fread(p, 1, length, vlogFile);
+    assert(readsize == length);
 
+    //write to compactedVlogFile
+    fseek(compactedVlogFile, compactTailOffset, SEEK_SET);
+    size_t writesize = fwrite(p, 1, length, compactedVlogFile);
+    assert(writesize == length);
+
+    //after write the vlog, we should also update the rocksdb entry
+    string dboffsetstring;
+    encodeOffset(dboffset(compactTailOffset, length), dboffsetstring);
+
+    ret = dbput(keystring, dboffsetstring);
+    assert(0 == ret);
+
+    //compact next entry
+    compactTailOffset += length;
+    if (vlogoffset + length < vlogFileSize)
+    {
+      Vlog_Compact(vlogoffset + length);  
+    }
+    else
+    {
+      removeVlog();
+    }
+  }
 }
 
 //traverse the whole vlog file
@@ -400,7 +515,7 @@ void Vlog_Traverse(int vlogoffset)
 
   cout << "offset is " << vlogoffset << endl;
   int keysize, valuesize;
-  int fixedsize = sizeof(VlogOndiskEntry);
+  int fixedsize = sizeof(struct VlogOndiskEntry);
 
   decodeEntryByOffset(vlogoffset, keysize, valuesize);
   cout << keysize << endl;
@@ -506,11 +621,13 @@ int main(int argc, char **argv)
   //TEST_readwrite();
   //searchtest();
   processoptions(argc, argv);
-  //TEST_readwrite();
-  ////TEST_writedelete();
-  initEnv();
-  getVlogFileSize();
-  Vlog_Traverse(0);
+  TEST_readwrite();
+  //TEST_writedelete();
+  //initEnv();
+  //getVlogFileSize();
+  //Vlog_Traverse(0);
+  //Vlog_Compact(0);
+  //Vlog_Traverse(0);
   //cout << "we got " << traversedKey << " keys"<< endl;
   //restartEnv();
   //TEST_memcpy();
