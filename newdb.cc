@@ -150,7 +150,7 @@ int dbget(string key, string &value)
   // get value
   rocksdb::Status s = db->Get(rocksdb::ReadOptions(), key, &value);
 
-  assert(s.ok());
+  //assert(s.ok());
   if (s.ok())
     return 0;
 
@@ -336,39 +336,86 @@ void getVlogFileSize()
 
 static int  nextoffset = 0;
 
+//get keysize/valuesize of an entry by offset
+void decodeEntryByOffset(int offset, int &keysize, int &valuesize)
+{
+  int fixedsize = sizeof(VlogOndiskEntry);
+  char p[fixedsize];
+
+  fseek(vlogFile, offset, SEEK_SET);
+  size_t readsize = fread(p, 1, fixedsize, vlogFile);
+  cout << "read " << readsize << " bytes from vlog"<< endl;
+  
+  string readkey, value;
+  string kvstring(p, readsize);
+
+  //we can get key/value now.
+  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value, false);
+}
+
+//get key of an entry by offset
+//@offset is the offset of the key
+void decodePayloadByOffset(int offset, int size, string &outstring)
+{
+  //now we can get the key/value. 
+  char readbuffer[size];
+  fseek(vlogFile, offset, SEEK_SET);
+  int readsize = fread(readbuffer, 1, size, vlogFile);
+
+  string tempstring(readbuffer, size);
+  outstring = tempstring;
+}
+//now we start compact only from zero offset of vlog file.
+void Vlog_Compact(int vlogoffset)
+{
+  assert(NULL != vlogFile);
+  cout << "offset is " << vlogoffset << endl;
+  int keysize, valuesize;
+  int fixedsize = sizeof(VlogOndiskEntry);
+
+  decodeEntryByOffset(vlogoffset, keysize, valuesize);
+  
+  //now we can get the key. 
+  string keystring;
+  
+  decodePayloadByOffset(vlogoffset + fixedsize, keysize, keystring);
+  cout << "key is " << keystring << endl;
+
+  //we query rocksdb with keystring 
+  string value;
+  int ret = dbget(keystring, value);
+  if (0 != ret)
+  {
+	//it's already deleted,so the space must be freed. 
+	
+  }
+
+
+}
+
+//traverse the whole vlog file
 void Vlog_Traverse(int vlogoffset)
 {
   assert(NULL != vlogFile);
 
   cout << "offset is " << vlogoffset << endl;
-  int fixedsize = sizeof(VlogOndiskEntry);
-  char p[fixedsize];
-
-  fseek(vlogFile, vlogoffset, SEEK_SET);
-  size_t readsize = fread(p, 1, fixedsize, vlogFile);
-  cout << "read " << readsize << " bytes from vlog"<< endl;
-  
-  string readkey, value;
   int keysize, valuesize;
-  string kvstring(p, readsize);
+  int fixedsize = sizeof(VlogOndiskEntry);
 
-  //we can not get key/value now.
-  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value, false);
+  decodeEntryByOffset(vlogoffset, keysize, valuesize);
   cout << keysize << endl;
   cout << valuesize << endl;
 
-  //now we can get the key/value. 
-  char readkeybuffer[keysize];
-  fseek(vlogFile, vlogoffset + fixedsize, SEEK_SET);
-  readsize = fread(readkeybuffer, 1, keysize, vlogFile);
-
-  string keystring(readkeybuffer, keysize);
+  //now we can get the key. 
+  string keystring;
+  
+  decodePayloadByOffset(vlogoffset + fixedsize, keysize, keystring);
   cout << "key is " << keystring << endl;
 
-  char readvaluebuffer[valuesize];
-  fseek(vlogFile, vlogoffset + fixedsize + keysize, SEEK_SET);
-  readsize = fread(readvaluebuffer, 1, valuesize, vlogFile);
-  string valuestring(readvaluebuffer, valuesize);
+  //now we can get the value. 
+  string valuestring;
+  
+  decodePayloadByOffset(vlogoffset + fixedsize + keysize, valuesize, valuestring);
   cout << "value is " << valuestring << endl;
 
   traversedKey++;
