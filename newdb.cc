@@ -12,10 +12,15 @@
 #include <string>
 #include <iostream>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <boost/program_options.hpp>
+#include <memory>
+#include <thread>
+#include <vector>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "rocksdb/db.h"
-#include "rocksdb/options.h"
 #include "rocksdb/options.h"
 
 /*
@@ -33,22 +38,22 @@ keysize and valuesize.
 //----------------------------------------
 //only dboffset is stored as value|
 //----------------------------------------
+using namespace std;
 static const int Vlogsize = 1<<8;
 static bool syncflag = false;
-using namespace std;
+static const int INVALID_FD = -1;
 
 const std::string kDBPath = "/home/wuxingyi/rocksdb/newdb/DBDATA/ROCKSDB";
 const std::string kDBVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/Vlog";
 const std::string kDBCompactedVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/CompactedVlog";
 static rocksdb::DB* db = nullptr;
-static FILE *vlogFile = NULL;
-static FILE *compactedVlogFile = NULL;
+static int vlogFile = INVALID_FD;
+static int compactedVlogFile = INVALID_FD;
 static int vlogOffset = 0;
-static int testkeys = 10000;
+static int testkeys = 10;
 static int vlogFileSize = 0;
 static int compactedVlogFileSize = 0;
 static int traversedKey = 0;
-static int totalkeys = 0;
 static int64_t compactTailOffset = 0;
 
 //finally we drop protobuf
@@ -136,26 +141,13 @@ void removeCompactedVlog()
   remove(kDBCompactedVlog.c_str());  
 }
 
-int createVlogfile()
+int createFd(string path)
 {
-  if (NULL == vlogFile)
-  {
-    vlogFile = fopen(kDBVlog.c_str(), "a+");
-    assert(NULL != vlogFile); 
-    return 0;
-  }
-  return -1;
-}
+    int ret = open(path.c_str(), O_RDWR | O_CREAT);
+    assert (0 < ret);
+    chmod(path.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 
-int createCompactedVlogfile()
-{
-  if (NULL == compactedVlogFile)
-  {
-    compactedVlogFile = fopen(kDBCompactedVlog.c_str(), "a+");
-    assert(NULL != compactedVlogFile); 
-    return 0;
-  }
-  return -1;
+    return ret;
 }
 
 int destroydb()
@@ -234,10 +226,10 @@ void clearEnv()
 
 void initEnv()
 {
-  int dir_err = mkdir("DBDATA", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+  int dir_err = mkdir("DBDATA", S_IRUSR | S_IRGRP | S_IROTH | S_IXOTH);
   dbinit();
-  createVlogfile();
-  createCompactedVlogfile();
+  vlogFile = createFd(kDBVlog);
+  compactedVlogFile = createFd(kDBCompactedVlog);
 }
 
 
@@ -280,35 +272,28 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
   return 0;
 }
 
-int vlog_write(FILE *vlogFileFd, int offset, const string &kvstring)
+int vlog_write(int vlogFileFd, int offset, const string &kvstring)
 {
-  assert(NULL != vlogFileFd);
   
-  //cout << __func__ << " kvstring length is " << kvstring.size() << endl;
-  fseek(vlogFile, offset, SEEK_SET);
-  
-  size_t writesize = fwrite(kvstring.data(), 1, kvstring.size(), vlogFile);
+  size_t writesize = pwrite(vlogFileFd, kvstring.c_str(), kvstring.size(), offset);
   assert(writesize == kvstring.size());
 
   return 0;
 }
 
 //reading a value from vlog, note that we know the offset and length
-int vlog_read(FILE *vlogFileFd, const string &key, string &value, int offset, int length)
+int vlog_read(int vlogFileFd, const string &key, string &value, int offset, int length)
 {
-  assert(NULL != vlogFileFd);
-  
-  fseek(vlogFileFd, offset, SEEK_SET);
-
   //add a terminal null
   char p[length];
-  size_t readsize = fread(p, 1, length, vlogFile);
+  size_t readsize = pread(vlogFileFd, p, length, offset);
   string vlogbuffer(p, length);
 
   string readkey;
   int keysize, valuesize;
 
   decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value, true);
+  //cout << "readkey is " << readkey << " , key is " << key << endl;
   assert(readkey == key);
   return 0;
 }
@@ -372,12 +357,20 @@ int Vlog_Put(string key, string value)
   return 0;
 }
 
+//this function is called only when encodedOffset is provided 
+//in which case, we donot need to call dbget
+static int vlog_get(string key, string encodedOffset, string &value)
+{
+  dboffset dbo(0, 0);
+  decodeOffset(dbo, encodedOffset);
+  vlog_read(vlogFile, key, value, dbo.offset, dbo.length);
+  return 0;
+}
 
 void getVlogFileSize()
 {
-  int fd=fileno(vlogFile);  
   struct stat fileStat;  
-  if( -1 == fstat(fd, &fileStat))  
+  if( -1 == fstat(vlogFile, &fileStat))  
   {  
     return; 
   }  
@@ -389,9 +382,8 @@ void getVlogFileSize()
 
 void getCptdVlogFileSize()
 {
-  int fd=fileno(compactedVlogFile);  
   struct stat fileStat;  
-  if( -1 == fstat(fd, &fileStat))  
+  if( -1 == fstat(compactedVlogFile, &fileStat))  
   {  
     return; 
   }  
@@ -408,8 +400,7 @@ void decodeEntryByOffset(int offset, int &keysize, int &valuesize)
   int fixedsize = sizeof(struct VlogOndiskEntry);
   char p[fixedsize];
 
-  fseek(vlogFile, offset, SEEK_SET);
-  size_t readsize = fread(p, 1, fixedsize, vlogFile);
+  size_t readsize = pread(vlogFile, p, fixedsize, offset);
   cout << "read " << readsize << " bytes from vlog"<< endl;
   
   string readkey, value;
@@ -425,8 +416,7 @@ void decodePayloadByOffset(int offset, int size, string &outstring)
 {
   //now we can get the key/value. 
   char readbuffer[size];
-  fseek(vlogFile, offset, SEEK_SET);
-  int readsize = fread(readbuffer, 1, size, vlogFile);
+  int readsize = pread(vlogFile, readbuffer, size, offset);
 
   string tempstring(readbuffer, size);
   outstring = tempstring;
@@ -445,9 +435,6 @@ void Vlog_StartCompat()
 //now we start compact only from zero offset of vlog file.
 void Vlog_Compact(int vlogoffset)
 {
-  assert(NULL != vlogFile);
-  assert(NULL != compactedVlogFile);
-
   //cout << __func__ << " offset is " << vlogoffset << endl;
   int keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
@@ -482,19 +469,16 @@ void Vlog_Compact(int vlogoffset)
   else
   {
     //it's still in the db, so we should copy the value to compacted Vlog
-    fseek(vlogFile, vlogoffset, SEEK_SET);
-
     //add a terminal null
     int length = fixedsize + keysize + valuesize; 
     char p[length];
-    size_t readsize = fread(p, 1, length, vlogFile);
+    size_t readsize = pread(vlogFile, p, length, vlogoffset);
     assert(readsize == length);
 
     //write to compactedVlogFile
     cout << "writing to compactedVlogFile at offset " << compactTailOffset << endl;
-    fseek(compactedVlogFile, compactTailOffset, SEEK_SET);
 
-    size_t writesize = fwrite(p, 1, length, compactedVlogFile);
+    size_t writesize = pwrite(compactedVlogFile, p, length, compactTailOffset);
     assert(writesize == length);
 
     //after write the vlog, we should also update the rocksdb entry
@@ -521,8 +505,6 @@ void Vlog_Compact(int vlogoffset)
 //traverse the whole vlog file
 void Vlog_Traverse(int vlogoffset)
 {
-  assert(NULL != vlogFile);
-
   cout << "offset is " << vlogoffset << endl;
   int keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
@@ -552,8 +534,6 @@ void Vlog_Traverse(int vlogoffset)
 //traverse the compacted vlog file
 void Vlog_TraverseCptedVlog(int vlogoffset)
 {
-  assert(NULL != compactedVlogFile);
-
   cout << "offset is " << vlogoffset << endl;
   int keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
@@ -585,6 +565,14 @@ void restartEnv()
   initEnv();
 }
 
+void reclaimResource()
+{
+  close(vlogFile);
+  close(compactedVlogFile);
+
+  if (nullptr != db)
+    delete db;
+}
 void TEST_readwrite()
 {
   restartEnv();
@@ -595,15 +583,14 @@ void TEST_readwrite()
     string value(num/10000000,'c'); 
     string key = to_string(num);
     
-    cout << "before Put: key is " << key << ", value is " <<  value 
-         << " key length is " << key.size() << ", value length is " << value.size() << endl;
+    //cout << "before Put: key is " << key << ", value is " <<  value 
+    //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
     Vlog_Put(key, value);
-    totalkeys++;
-    value.clear();
-    Vlog_Get(key, value);
-    cout << "after  Get: key is " << key << ", value is " << value 
-         << " key length is " << key.size() << ", value length is " << value.size() << endl;
-    cout << "---------------------------------------------------" << endl;
+    //value.clear();
+    //Vlog_Get(key, value);
+    //cout << "after  Get: key is " << key << ", value is " << value 
+    //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+    //cout << "---------------------------------------------------" << endl;
   }
 }
 
@@ -673,10 +660,68 @@ void TEST_Compact(int argc, char **argv)
   Vlog_TraverseCptedVlog(0);
 }
 
+void Vlog_query(string key, string offset)
+{
+  string value;
+  vlog_get(key, offset, value);
+  cout << __func__ << " " << key << ": " << value << endl;
+}
+
+//implement range query which is not parallel
+void Vlog_rangequery()
+{
+  cout << __func__ << endl;
+  rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
+
+  string value;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) 
+  {
+    Vlog_query(it->key().ToString(), it->value().ToString());  
+  }
+
+  assert(it->status().ok()); // Check for any errors found during the scan
+  delete it;
+}
+
+//implement parallel range query
+void Vlog_parallelrangequery()
+{
+  using namespace std;
+  cout << __func__ << endl;
+  rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
+
+  std::vector<std::thread> workers;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) 
+  {
+    //cout << "querying key " << it->key().ToString() << endl;
+    workers.push_back(std::thread(Vlog_query, it->key().ToString(), it->value().ToString()));
+  }
+  
+  for (auto& worker : workers) 
+  {
+    worker.join();
+  }
+  assert(it->status().ok()); // Check for any errors found during the scan
+  delete it;
+}
+
+void TEST_rangequery(int argc, char **argv) 
+{
+  processoptions(argc, argv);
+  TEST_readwrite();
+  Vlog_rangequery();
+  Vlog_parallelrangequery();
+}
+
 int main(int argc, char **argv) 
 {
-  TEST_Compact(argc, argv);
+  TEST_rangequery(argc, argv);
+  //restartEnv();
+  //TEST_Compact(argc, argv);
+  //processoptions(argc, argv);
   //TEST_readwrite();
+  //Vlog_rangequery();
+  //Vlog_parallelrangequery();
   //searchtest();
   //processoptions(argc, argv);
   //TEST_readwrite();
@@ -689,5 +734,6 @@ int main(int argc, char **argv)
   //cout << "we got " << traversedKey << " keys"<< endl;
   //restartEnv();
   //TEST_memcpy();
+  reclaimResource();
   return 0;
 }
