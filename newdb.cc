@@ -143,9 +143,8 @@ void removeCompactedVlog()
 
 int createFd(string path)
 {
-    int ret = open(path.c_str(), O_RDWR | O_CREAT);
+    int ret = open(path.c_str(), O_RDWR | O_CREAT | O_SYNC, 0644);
     assert (0 < ret);
-    chmod(path.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 
     return ret;
 }
@@ -226,7 +225,7 @@ void clearEnv()
 
 void initEnv()
 {
-  int dir_err = mkdir("DBDATA", S_IRUSR | S_IRGRP | S_IROTH | S_IXOTH);
+  int dir_err = mkdir("DBDATA", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
   dbinit();
   vlogFile = createFd(kDBVlog);
   compactedVlogFile = createFd(kDBCompactedVlog);
@@ -274,7 +273,6 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
 
 int vlog_write(int vlogFileFd, int offset, const string &kvstring)
 {
-  
   size_t writesize = pwrite(vlogFileFd, kvstring.c_str(), kvstring.size(), offset);
   assert(writesize == kvstring.size());
 
@@ -690,6 +688,8 @@ void Vlog_parallelrangequery()
   cout << __func__ << endl;
   rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
 
+  //this is a naive version, we create a thread to read the vlog
+  //TODO(wuxingyi): use workqueue here
   std::vector<std::thread> workers;
   for (it->SeekToFirst(); it->Valid(); it->Next()) 
   {
