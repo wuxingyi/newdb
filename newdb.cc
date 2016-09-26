@@ -46,6 +46,7 @@ static FILE *compactedVlogFile = NULL;
 static int vlogOffset = 0;
 static int testkeys = 10000;
 static int vlogFileSize = 0;
+static int compactedVlogFileSize = 0;
 static int traversedKey = 0;
 static int totalkeys = 0;
 static int64_t compactTailOffset = 0;
@@ -62,7 +63,7 @@ struct VlogOndiskEntry
 {
   int32_t keysize = 0;
   int32_t valuesize = 0;
-  int64_t magic = 0x007;
+  int64_t magic = 0x007007;
   VlogOndiskEntry(int32_t keysize_, int32_t valuesize_):keysize(keysize_),
                                                         valuesize(valuesize_){}
 };
@@ -90,8 +91,6 @@ int dbinit();
 //encode a dboffset struct into a string
 void encodeOffset(const dboffset &dbo, string &outstring)
 {
-  cout  << __func__ << " dbo offset is " << dbo.offset << endl;
-  cout  << __func__ << " dbo length is " << dbo.length << endl;
   size_t size = sizeof(struct dboffset);
   char p[size];
 
@@ -100,15 +99,13 @@ void encodeOffset(const dboffset &dbo, string &outstring)
   //this is ugly, but we cannot use `outstring = p` because p is not
   //necessarily null-terminated.
   string temps(p, size);
-  outstring = p;
+  outstring = temps;
 }
 
 //decode a string into a dboffset struct
 void decodeOffset(dboffset &dbo, const string &instring)
 {
   memcpy((char *)&dbo, instring.c_str(), sizeof(struct dboffset));
-  cout  << __func__ << " dbo offset is " << dbo.offset << endl;
-  cout  << __func__ << " dbo length is " << dbo.length << endl;
 }
 
 //encode a compactOffset struct into a string
@@ -122,7 +119,7 @@ void encodeCompactOffset(const compactOffset &dbo, string &outstring)
   //this is ugly, but we cannot use `outstring = p` because p is not
   //necessarily null-terminated.
   string temps(p, size);
-  outstring = p;
+  outstring = temps;
 }
 
 //decode a string into a compactOffset struct
@@ -350,10 +347,6 @@ int Vlog_Put(string key, string value)
   dboffset tempdbo(vlogOffset, Vlogstring.size());
   encodeOffset(tempdbo, dboffsetstring);
 
-  dboffset tempdbo2(0, 0);
-  string tempstring2;
-  decodeOffset(tempdbo2, tempstring2);
-
   ret = dbput(key, dboffsetstring);
   if (0 != ret)
   {
@@ -394,6 +387,19 @@ void getVlogFileSize()
   cout << "vlogFileSize is " << vlogFileSize << endl;
 }
 
+void getCptdVlogFileSize()
+{
+  int fd=fileno(compactedVlogFile);  
+  struct stat fileStat;  
+  if( -1 == fstat(fd, &fileStat))  
+  {  
+    return; 
+  }  
+ 
+  // deal returns.  
+  compactedVlogFileSize = fileStat.st_size;  
+  cout << "compactedVlogFileSize is " << compactedVlogFileSize << endl;
+}
 static int  nextoffset = 0;
 
 //get keysize/valuesize of an entry by offset
@@ -442,7 +448,7 @@ void Vlog_Compact(int vlogoffset)
   assert(NULL != vlogFile);
   assert(NULL != compactedVlogFile);
 
-  cout << "offset is " << vlogoffset << endl;
+  //cout << __func__ << " offset is " << vlogoffset << endl;
   int keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
@@ -469,6 +475,7 @@ void Vlog_Compact(int vlogoffset)
     }
     else
     {
+      //all items has been compacted
       removeVlog();
     }
   }
@@ -484,7 +491,9 @@ void Vlog_Compact(int vlogoffset)
     assert(readsize == length);
 
     //write to compactedVlogFile
+    cout << "writing to compactedVlogFile at offset " << compactTailOffset << endl;
     fseek(compactedVlogFile, compactTailOffset, SEEK_SET);
+
     size_t writesize = fwrite(p, 1, length, compactedVlogFile);
     assert(writesize == length);
 
@@ -503,6 +512,7 @@ void Vlog_Compact(int vlogoffset)
     }
     else
     {
+      //all items has been compacted
       removeVlog();
     }
   }
@@ -539,6 +549,36 @@ void Vlog_Traverse(int vlogoffset)
     Vlog_Traverse(nextoffset);
 }
 
+//traverse the compacted vlog file
+void Vlog_TraverseCptedVlog(int vlogoffset)
+{
+  assert(NULL != compactedVlogFile);
+
+  cout << "offset is " << vlogoffset << endl;
+  int keysize, valuesize;
+  int fixedsize = sizeof(struct VlogOndiskEntry);
+
+  decodeEntryByOffset(vlogoffset, keysize, valuesize);
+  cout << keysize << endl;
+  cout << valuesize << endl;
+
+  //now we can get the key. 
+  string keystring;
+  
+  decodePayloadByOffset(vlogoffset + fixedsize, keysize, keystring);
+  cout << "key is " << keystring << endl;
+
+  //now we can get the value. 
+  string valuestring;
+  
+  decodePayloadByOffset(vlogoffset + fixedsize + keysize, valuesize, valuestring);
+  cout << "value is " << valuestring << endl;
+
+  traversedKey++;
+  nextoffset = vlogoffset + fixedsize + keysize + valuesize;
+  if (nextoffset < compactedVlogFileSize)
+    Vlog_Traverse(nextoffset);
+}
 void restartEnv()
 {
   clearEnv();
@@ -615,13 +655,31 @@ int processoptions(int argc, char **argv)
   return 0;
 }
 
+void TEST_Compact(int argc, char **argv)
+{
+  processoptions(argc, argv);
+
+  //1.first we test delete all k/v pairs
+  //TEST_writedelete();
+  //getVlogFileSize();
+  //Vlog_Compact(0);
+
+  //2.some keys are deleted
+  TEST_readwrite();
+  getVlogFileSize();
+  Vlog_Compact(0);
+  getCptdVlogFileSize();
+  //after compaction, we should traverse it to testify it.
+  Vlog_TraverseCptedVlog(0);
+}
 
 int main(int argc, char **argv) 
 {
+  TEST_Compact(argc, argv);
   //TEST_readwrite();
   //searchtest();
-  processoptions(argc, argv);
-  TEST_readwrite();
+  //processoptions(argc, argv);
+  //TEST_readwrite();
   //TEST_writedelete();
   //initEnv();
   //getVlogFileSize();

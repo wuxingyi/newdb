@@ -1,9 +1,10 @@
 1.update proto definiton: put key to vlog
 2.optimize write db and write vlog
-3.implement vlog compact
-4.write more vlog files
+3.implement vlog compact (DONE)
+4.write more vlog files 
 5.compatible with rocksdb interfaces
-6.implement delete key
+6.implement delete key (DONE)
 7.add batch api
 8.add interface to manage vlog entries
-9.protobuf is really buggy, drop it
+9.protobuf is really buggy, drop it (DONE)
+10.implement range query
