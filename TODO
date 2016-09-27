@@ -10,3 +10,8 @@
 10.implement range query
 11.replace fopen/fwrite with open/write (DONE)
 12.free resources is not handled (DONE)
+13.write vlog first, then write to rocksdb
+14.write db checkpoint/recovery 
+15.it seems better to make vlogs sorted.
+16.for batch writes, how can we determine the offset to the vlogfile? if single writer, this's not a problem.
+17.create threads for read/write.

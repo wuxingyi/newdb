@@ -29,9 +29,9 @@ note that keyszie and valuesize is fixed size, always take 4+4+8=16 bytes.
 definiton of message vlogkeyvalue:
 we set keystring and valuestring as optional because we will decode 
 keysize and valuesize.
-------------------------------------
-|keysize | valuesize | key | value |
-------------------------------------
+--------------------------------------------
+|keysize | valuesize | magic | key | value |
+--------------------------------------------
 */
 
 //ROCKSDB STRUCT
@@ -56,12 +56,6 @@ static int compactedVlogFileSize = 0;
 static int traversedKey = 0;
 static int64_t compactTailOffset = 0;
 
-//finally we drop protobuf
-//fixed length of keysize+valuesize, porobuff add another 6 bytpes to tow fixed64
-//so the VlogFixedLen is 2*8 + 6 = 22
-//which is really buggy
-//static const int VlogFixedLen = 22;
-
 //it's crazy to have a key/value bigger than 4GB:)
 //a key/value string is followed by a VlogOndiskEntry struct
 struct VlogOndiskEntry
@@ -71,6 +65,11 @@ struct VlogOndiskEntry
   int64_t magic = 0x007007;
   VlogOndiskEntry(int32_t keysize_, int32_t valuesize_):keysize(keysize_),
                                                         valuesize(valuesize_){}
+  VlogOndiskEntry(const VlogOndiskEntry &other)
+  {
+    keysize = other.keysize;
+    valuesize = other.valuesize;
+  }
 };
 
 struct dboffset
@@ -91,7 +90,6 @@ struct compactOffset
                                                head_offset(head_offset_){}
 };
 int dbinit();
-
 
 //encode a dboffset struct into a string
 void encodeOffset(const dboffset &dbo, string &outstring)
@@ -231,6 +229,32 @@ void initEnv()
   compactedVlogFile = createFd(kDBCompactedVlog);
 }
 
+//note:
+//1.delete operation does not have to have to write to vlog 
+//2.after batch operation, every write ops were appened to outsring
+int encodeBatchVlogEntry(const vector<string> &keys, const vector<string> &values, 
+                         const vector<bool> &deleteflags, string &outstring)
+{
+  assert(keys.size() == values.size());
+  assert(keys.size() == deleteflags.size());
+
+  int iterms = keys.size();
+  int size = sizeof(struct VlogOndiskEntry);
+  char p[size];
+
+  for (int i = 0; i<iterms;i++)
+  {
+    if (true == deleteflags[i])
+      continue;
+
+    VlogOndiskEntry fixedentry(keys[i].size(), values[i].size());
+    memcpy(p, &fixedentry, size);
+    string temp(p, size);
+
+    outstring += temp + keys[i] + values[i];
+  }
+  return 0;
+}
 
 //@outstring is going to write to Vlog after a VlogOndiskEntry struct
 int encodeVlogEntry(const string &key, const string &value, string &outstring)
@@ -274,6 +298,9 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
 int vlog_write(int vlogFileFd, int offset, const string &kvstring)
 {
   size_t writesize = pwrite(vlogFileFd, kvstring.c_str(), kvstring.size(), offset);
+
+  cout << "writesize is " << writesize << endl;
+  cout << "kvstring size is is " << kvstring.size() << endl;
   assert(writesize == kvstring.size());
 
   return 0;
@@ -302,6 +329,7 @@ int Vlog_Delete(string key)
 {
   return dbdelete(key);  
 }
+
 //get value from vlog
 int Vlog_Get(string key, string &value)
 {
@@ -318,24 +346,83 @@ int Vlog_Get(string key, string &value)
   return 0;
 }
 
+//generate @batchstr, only called by Vlog_BatchPut
+void _vlog_prepareBatch(vector<string> keys, vector<string> values, 
+                        vector<bool> deleteflags, string &batchstr)
+{
+  encodeBatchVlogEntry(keys, values, deleteflags, batchstr);    
+}
+
+
+//generate a WriteBatch, only called by Vlog_BatchPut
+void _rocksdb_prepareBatch(rocksdb::WriteBatch &batch, vector<string> keys, 
+                           vector<string> values, vector<bool> deleteflags,
+                           int baseoffset)
+{
+  string dboffsetstring;
+  int currentoffset = baseoffset;
+  for (int i = 0; i< keys.size(); i++)
+  {
+    if (deleteflags[i] == true)
+    {
+      batch.Delete(keys[i]);
+    }
+    else
+    {
+      string dboffsetstring;
+      dboffset tempdbo(currentoffset, values[i].size());
+      encodeOffset(tempdbo, dboffsetstring);
+      batch.Put(keys[i], dboffsetstring);
+      currentoffset += values[i].size();
+    }
+  }
+
+  return;
+}
+
+//deleteflags is a vector of flags to define whether is a delete operation
+//when it's a delete operation, value should always be a null string.
+int Vlog_BatchPut(vector<string> keys, vector<string> values, vector<bool> deleteflags)
+{
+  int size = keys.size();
+  assert(size == values.size());  
+  assert(size == deleteflags.size());  
+
+  string batstr;
+
+  _vlog_prepareBatch(keys, values, deleteflags, batstr);
+
+  //TODO(wuxingyi): we can not allow other threads to change the base offset
+  //vlogOffset should be protected by mutex, which is not supported now
+  //we just change the vlogOffset here
+  int baseoffset = vlogOffset;
+  vlogOffset += batstr.size();
+  
+  //now we should write to vlog
+  vlog_write(vlogFile, baseoffset, batstr);
+  
+  //after writing to vlog, it's time to write to rocksdb
+  //first we should get generate a dboffset for each entry
+  rocksdb::WriteBatch batch;
+
+  _rocksdb_prepareBatch(batch, keys, values, deleteflags, baseoffset);
+
+  rocksdb::Status s = db->Write(rocksdb::WriteOptions(), &batch);
+  assert(s.ok());
+}
+
 //store a key/value pair to wisckeydb
 //note the key/dboffset is stored to rocksdb
 //but vlaue is stored by us using vlog 
 int Vlog_Put(string key, string value)
 {
+  //we first write encoded value to vlog, then to rocksdb.
+  //this will help us with recover procedure
+  //note that we write to vlog with O_SYNC flag, so vlog entry 
+  //can be used as a journal for us to recover the iterm which 
+  //has not been written to rocksdb yet.
   string Vlogstring, dboffsetstring;
   int ret = encodeVlogEntry(key, value, Vlogstring);
-
-  //total length for a entry is Vlogstring_size
-  dboffset tempdbo(vlogOffset, Vlogstring.size());
-  encodeOffset(tempdbo, dboffsetstring);
-
-  ret = dbput(key, dboffsetstring);
-  if (0 != ret)
-  {
-    cout << "write to rocksdb failed" << endl;
-    return -1;
-  }
 
   //note that there may be null terminal(because it's binary), so we should use
   //string::string (const char* s, size_t n) constructor
@@ -352,6 +439,18 @@ int Vlog_Put(string key, string value)
   }
   
   vlogOffset += Vlogstring.size();
+
+  //total length for a the entry is Vlogstring.size()
+  dboffset tempdbo(vlogOffset, Vlogstring.size());
+  encodeOffset(tempdbo, dboffsetstring);
+
+  ret = dbput(key, dboffsetstring);
+  if (0 != ret)
+  {
+    cout << "write to rocksdb failed" << endl;
+    return -1;
+  }
+
   return 0;
 }
 
@@ -524,6 +623,7 @@ void Vlog_Traverse(int vlogoffset)
   cout << "value is " << valuestring << endl;
 
   traversedKey++;
+  getVlogFileSize();
   nextoffset = vlogoffset + fixedsize + keysize + valuesize;
   if (nextoffset < vlogFileSize)
     Vlog_Traverse(nextoffset);
@@ -621,7 +721,7 @@ int processoptions(int argc, char **argv)
   options_description desc("Allowed options");
   desc.add_options()
       ("help,h", "produce help message")
-      ("sync,s", value<bool>()->default_value(true), "whether use sync flag")
+      //("sync,s", value<bool>()->default_value(true), "whether use sync flag")
       ("keys,k", value<int>()->default_value(1), "how many keys to put")
       ;
 
@@ -635,7 +735,9 @@ int processoptions(int argc, char **argv)
       return 0;
   }
 
-  syncflag = vm["sync"].as<bool>();
+  //actually we can always make syncflag false, because 
+  //we can make use of vlog to recover.
+  //syncflag = vm["sync"].as<bool>();
   testkeys = vm["keys"].as<int>();
   return 0;
 }
@@ -693,7 +795,6 @@ void Vlog_parallelrangequery()
   std::vector<std::thread> workers;
   for (it->SeekToFirst(); it->Valid(); it->Next()) 
   {
-    //cout << "querying key " << it->key().ToString() << endl;
     workers.push_back(std::thread(Vlog_query, it->key().ToString(), it->value().ToString()));
   }
   
@@ -701,10 +802,38 @@ void Vlog_parallelrangequery()
   {
     worker.join();
   }
+
   assert(it->status().ok()); // Check for any errors found during the scan
   delete it;
 }
 
+//this function is used to recover from a crash to make data and 
+//metadata consistent.
+//note that we must do checkpoint to scan as less vlog entries as possible.
+//as is shown in Vlog_Put, we first write value(aka data) to vlog with sync 
+//flag, then write key/offset(aka metadata) pair to rocksdb.  
+//actually we can return success after writting data, because data we can
+//rebuild metadata through data.
+//question: how to rebuild metadata through data?
+//the checkpoint postion is :
+//--------------------------------------------
+//|keysize | valuesize | magic | key | value |
+//--------------------------------------------
+//the offset is the checkpoint_pos, the length is 4+4+8+keysize+valuesize
+//so we can rebuild metadata tuple:  (offset, length)
+//note that we are not rocksdb, we want to replace rocksdb, but we also have
+//to make use of it to store important infomation: the checkpoint. 
+//more questions:
+//1. we may have many vlog files, the recovery may be time consuming.
+//2. how to deal with rocksdb batch APIs? batch write should be rollbackable.
+//3. how to deal with delete api? should record to vlog?
+//4. should we support column family? currently only default cf is supported.
+//5. how to keep consistent meanwhile get most performance? writebatch with options.sync=true?
+//void Vlog_recover()
+//{
+//  
+//
+//}
 void TEST_rangequery(int argc, char **argv) 
 {
   processoptions(argc, argv);
@@ -713,9 +842,45 @@ void TEST_rangequery(int argc, char **argv)
   Vlog_parallelrangequery();
 }
 
+void TEST_Batch(int argc, char **argv)
+{
+  processoptions(argc, argv);
+  restartEnv();
+
+  vector<string> keys;
+  vector<string> values;
+  vector<bool> deleteflags;
+  string randkey;
+  string randvalue;
+
+  for (int i = 0; i < 100; i++)
+  {
+    randkey = to_string(rand());
+    keys.push_back(randkey);
+    randvalue = string(rand()/1000000, 'c');
+    values.push_back(randvalue);
+    deleteflags.push_back(false);
+  }
+  
+  for (int i = 0; i < 100; i++)
+  {
+    if (i % 2 == 0)
+    {
+      cout << "we need to delete " << randkey << endl;
+      keys.push_back(keys[i]);
+      values.push_back("");
+      deleteflags.push_back(true);
+    }
+  }
+
+  Vlog_BatchPut(keys, values, deleteflags);
+  Vlog_Traverse(0);
+}
+
 int main(int argc, char **argv) 
 {
-  TEST_rangequery(argc, argv);
+  TEST_Batch(argc, argv);
+  //TEST_rangequery(argc, argv);
   //restartEnv();
   //TEST_Compact(argc, argv);
   //processoptions(argc, argv);
@@ -734,6 +899,6 @@ int main(int argc, char **argv)
   //cout << "we got " << traversedKey << " keys"<< endl;
   //restartEnv();
   //TEST_memcpy();
-  reclaimResource();
+  //reclaimResource();
   return 0;
 }
