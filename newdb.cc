@@ -25,7 +25,7 @@
 
 /*
 VLOG FORMAT
-note that keyszie and valuesize is fixed size, always take 4+4+8=16 bytes.
+note that keyszie and valuesize is fixed size, always take 8+8+8=24 bytes.
 definiton of message vlogkeyvalue:
 we set keystring and valuestring as optional because we will decode 
 keysize and valuesize.
@@ -49,21 +49,21 @@ const std::string kDBCompactedVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/Compac
 static rocksdb::DB* db = nullptr;
 static int vlogFile = INVALID_FD;
 static int compactedVlogFile = INVALID_FD;
-static int vlogOffset = 0;
+static int64_t vlogOffset = 0;
 static int testkeys = 10;
-static int vlogFileSize = 0;
+static int64_t vlogFileSize = 0;
 static int compactedVlogFileSize = 0;
 static int traversedKey = 0;
 static int64_t compactTailOffset = 0;
 
-//it's crazy to have a key/value bigger than 4GB:)
+//it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntry struct
 struct VlogOndiskEntry
 {
-  int32_t keysize = 0;
-  int32_t valuesize = 0;
+  int64_t keysize = 0;
+  int64_t valuesize = 0;
   int64_t magic = 0x007007;
-  VlogOndiskEntry(int32_t keysize_, int32_t valuesize_):keysize(keysize_),
+  VlogOndiskEntry(int64_t keysize_, int64_t valuesize_):keysize(keysize_),
                                                         valuesize(valuesize_){}
   VlogOndiskEntry(const VlogOndiskEntry &other)
   {
@@ -76,7 +76,7 @@ struct dboffset
 {
   int64_t offset = 0;
   int64_t length = 0;
-  dboffset(int offset_, int length_):offset(offset_), length(length_){}
+  dboffset(int64_t offset_, int64_t length_):offset(offset_), length(length_){}
 };
 
 //we should write the progress of compaction to rocksdb
@@ -86,7 +86,7 @@ struct compactOffset
 {
   int64_t tail_offset;
   int64_t head_offset;
-  compactOffset(int tail_offset_, int head_offset_):tail_offset(tail_offset_),
+  compactOffset(int64_t tail_offset_, int64_t head_offset_):tail_offset(tail_offset_),
                                                head_offset(head_offset_){}
 };
 int dbinit();
@@ -271,7 +271,7 @@ int encodeVlogEntry(const string &key, const string &value, string &outstring)
 }
 
 //@needstring  is used because sometimes we donot need the string
-int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string &key, string &value, bool needstring)
+int decodeVlogEntry(const string &instring, int64_t &keysize, int64_t &valuesize, string &key, string &value, bool needstring)
 {
   VlogOndiskEntry *pfixedentry;
 
@@ -295,7 +295,7 @@ int decodeVlogEntry(const string &instring, int &keysize, int &valuesize, string
   return 0;
 }
 
-int vlog_write(int vlogFileFd, int offset, const string &kvstring)
+int vlog_write(int vlogFileFd, int64_t offset, const string &kvstring)
 {
   size_t writesize = pwrite(vlogFileFd, kvstring.c_str(), kvstring.size(), offset);
 
@@ -307,7 +307,7 @@ int vlog_write(int vlogFileFd, int offset, const string &kvstring)
 }
 
 //reading a value from vlog, note that we know the offset and length
-int vlog_read(int vlogFileFd, const string &key, string &value, int offset, int length)
+int vlog_read(int vlogFileFd, const string &key, string &value, int64_t offset, int64_t length)
 {
   //add a terminal null
   char p[length];
@@ -315,7 +315,7 @@ int vlog_read(int vlogFileFd, const string &key, string &value, int offset, int 
   string vlogbuffer(p, length);
 
   string readkey;
-  int keysize, valuesize;
+  int64_t keysize, valuesize;
 
   decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value, true);
   //cout << "readkey is " << readkey << " , key is " << key << endl;
@@ -357,10 +357,10 @@ void _vlog_prepareBatch(vector<string> keys, vector<string> values,
 //generate a WriteBatch, only called by Vlog_BatchPut
 void _rocksdb_prepareBatch(rocksdb::WriteBatch &batch, vector<string> keys, 
                            vector<string> values, vector<bool> deleteflags,
-                           int baseoffset)
+                           int64_t baseoffset)
 {
   string dboffsetstring;
-  int currentoffset = baseoffset;
+  int64_t currentoffset = baseoffset;
   for (int i = 0; i< keys.size(); i++)
   {
     if (deleteflags[i] == true)
@@ -395,7 +395,7 @@ int Vlog_BatchPut(vector<string> keys, vector<string> values, vector<bool> delet
   //TODO(wuxingyi): we can not allow other threads to change the base offset
   //vlogOffset should be protected by mutex, which is not supported now
   //we just change the vlogOffset here
-  int baseoffset = vlogOffset;
+  int64_t baseoffset = vlogOffset;
   vlogOffset += batstr.size();
   
   //now we should write to vlog
@@ -473,7 +473,7 @@ void getVlogFileSize()
   }  
  
   // deal returns.  
-  vlogFileSize = fileStat.st_size;  
+  vlogFileSize = (int64_t)fileStat.st_size;  
   cout << "vlogFileSize is " << vlogFileSize << endl;
 }
 
@@ -492,7 +492,7 @@ void getCptdVlogFileSize()
 static int  nextoffset = 0;
 
 //get keysize/valuesize of an entry by offset
-void decodeEntryByOffset(int offset, int &keysize, int &valuesize)
+void decodeEntryByOffset(int64_t offset, int64_t &keysize, int64_t &valuesize)
 {
   int fixedsize = sizeof(struct VlogOndiskEntry);
   char p[fixedsize];
@@ -509,11 +509,11 @@ void decodeEntryByOffset(int offset, int &keysize, int &valuesize)
 
 //get key of an entry by offset
 //@offset is the offset of the key
-void decodePayloadByOffset(int offset, int size, string &outstring)
+void decodePayloadByOffset(int64_t offset, int64_t size, string &outstring)
 {
   //now we can get the key/value. 
   char readbuffer[size];
-  int readsize = pread(vlogFile, readbuffer, size, offset);
+  int64_t readsize = pread(vlogFile, readbuffer, size, offset);
 
   string tempstring(readbuffer, size);
   outstring = tempstring;
@@ -530,10 +530,10 @@ void Vlog_StartCompat()
   //TODO(wuxingyi): write comoffset to rocksdb
 }
 //now we start compact only from zero offset of vlog file.
-void Vlog_Compact(int vlogoffset)
+void Vlog_Compact(int64_t vlogoffset)
 {
   //cout << __func__ << " offset is " << vlogoffset << endl;
-  int keysize, valuesize;
+  int64_t keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
   decodeEntryByOffset(vlogoffset, keysize, valuesize);
@@ -600,10 +600,10 @@ void Vlog_Compact(int vlogoffset)
 }
 
 //traverse the whole vlog file
-void Vlog_Traverse(int vlogoffset)
+void Vlog_Traverse(int64_t vlogoffset)
 {
   cout << "offset is " << vlogoffset << endl;
-  int keysize, valuesize;
+  int64_t keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
   decodeEntryByOffset(vlogoffset, keysize, valuesize);
@@ -620,7 +620,7 @@ void Vlog_Traverse(int vlogoffset)
   string valuestring;
   
   decodePayloadByOffset(vlogoffset + fixedsize + keysize, valuesize, valuestring);
-  cout << "value is " << valuestring << endl;
+  //cout << "value is " << valuestring << endl;
 
   traversedKey++;
   getVlogFileSize();
@@ -630,10 +630,10 @@ void Vlog_Traverse(int vlogoffset)
 }
 
 //traverse the compacted vlog file
-void Vlog_TraverseCptedVlog(int vlogoffset)
+void Vlog_TraverseCptedVlog(int64_t vlogoffset)
 {
   cout << "offset is " << vlogoffset << endl;
-  int keysize, valuesize;
+  int64_t keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
   decodeEntryByOffset(vlogoffset, keysize, valuesize);
@@ -819,7 +819,7 @@ void Vlog_parallelrangequery()
 //--------------------------------------------
 //|keysize | valuesize | magic | key | value |
 //--------------------------------------------
-//the offset is the checkpoint_pos, the length is 4+4+8+keysize+valuesize
+//the offset is the checkpoint_pos, the length is 8+8+8+keysize+valuesize
 //so we can rebuild metadata tuple:  (offset, length)
 //note that we are not rocksdb, we want to replace rocksdb, but we also have
 //to make use of it to store important infomation: the checkpoint. 
@@ -853,20 +853,20 @@ void TEST_Batch(int argc, char **argv)
   string randkey;
   string randvalue;
 
-  for (int i = 0; i < 100; i++)
+  for (int i = 0; i < testkeys; i++)
   {
     randkey = to_string(rand());
     keys.push_back(randkey);
-    randvalue = string(rand()/1000000, 'c');
+    randvalue = string(rand()/10000, 'c');
     values.push_back(randvalue);
     deleteflags.push_back(false);
   }
   
-  for (int i = 0; i < 100; i++)
+  for (int i = 0; i < testkeys; i++)
   {
     if (i % 2 == 0)
     {
-      cout << "we need to delete " << randkey << endl;
+      //cout << "we need to delete " << randkey << endl;
       keys.push_back(keys[i]);
       values.push_back("");
       deleteflags.push_back(true);
@@ -874,12 +874,18 @@ void TEST_Batch(int argc, char **argv)
   }
 
   Vlog_BatchPut(keys, values, deleteflags);
-  Vlog_Traverse(0);
+  keys.clear();
+  values.clear();
+  deleteflags.clear();
+
+  //Vlog_Traverse(0);
 }
 
 int main(int argc, char **argv) 
 {
-  TEST_Batch(argc, argv);
+  initEnv();
+  Vlog_Traverse(0);
+  //TEST_Batch(argc, argv);
   //TEST_rangequery(argc, argv);
   //restartEnv();
   //TEST_Compact(argc, argv);
