@@ -43,9 +43,9 @@ static const int Vlogsize = 1<<8;
 static bool syncflag = false;
 static const int INVALID_FD = -1;
 
-const std::string kDBPath = "/home/wuxingyi/rocksdb/newdb/DBDATA/ROCKSDB";
-const std::string kDBVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/Vlog";
-const std::string kDBCompactedVlog = "/home/wuxingyi/rocksdb/newdb/DBDATA/CompactedVlog";
+const std::string kDBPath = "./DBDATA/ROCKSDB";
+const std::string kDBVlog = "./DBDATA/Vlog";
+const std::string kDBCompactedVlog = "./DBDATA/CompactedVlog";
 static rocksdb::DB* db = nullptr;
 static int vlogFile = INVALID_FD;
 static int compactedVlogFile = INVALID_FD;
@@ -878,14 +878,14 @@ void TEST_Batch(int argc, char **argv)
   values.clear();
   deleteflags.clear();
 
-  //Vlog_Traverse(0);
+  Vlog_Traverse(0);
 }
 
 int main(int argc, char **argv) 
 {
-  initEnv();
-  Vlog_Traverse(0);
-  //TEST_Batch(argc, argv);
+  //initEnv();
+  //Vlog_Traverse(0);
+  TEST_Batch(argc, argv);
   //TEST_rangequery(argc, argv);
   //restartEnv();
   //TEST_Compact(argc, argv);
