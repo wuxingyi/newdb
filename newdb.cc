@@ -101,8 +101,7 @@ void encodeOffset(const dboffset &dbo, string &outstring)
   
   //this is ugly, but we cannot use `outstring = p` because p is not
   //necessarily null-terminated.
-  string temps(p, size);
-  outstring = temps;
+  outstring = string(p, size);
 }
 
 //decode a string into a dboffset struct
@@ -122,7 +121,7 @@ void encodeCompactOffset(const compactOffset &dbo, string &outstring)
   //this is ugly, but we cannot use `outstring = p` because p is not
   //necessarily null-terminated.
   string temps(p, size);
-  outstring = temps;
+  outstring = string(p, size);
 }
 
 //decode a string into a compactOffset struct
@@ -208,9 +207,11 @@ int dbinit()
   options.OptimizeLevelStyleCompaction();
   // create the DB if it's not already present
   options.create_if_missing = true;
+  options.compression = rocksdb::kNoCompression;
 
   // open DB
   rocksdb::Status s = rocksdb::DB::Open(options, kDBPath, &db);
+  cout << s.ToString() << endl;
   assert(s.ok());
 }
 
@@ -264,9 +265,8 @@ int encodeVlogEntry(const string &key, const string &value, string &outstring)
   int size = sizeof(struct VlogOndiskEntry);
   char p[size];
   memcpy(p, &fixedentry, size);
-  string temp(p, size);
 
-  outstring = temp + key + value;
+  outstring = string(p, size) + key + value;
   return 0;
 }
 
@@ -515,8 +515,7 @@ void decodePayloadByOffset(int64_t offset, int64_t size, string &outstring)
   char readbuffer[size];
   int64_t readsize = pread(vlogFile, readbuffer, size, offset);
 
-  string tempstring(readbuffer, size);
-  outstring = tempstring;
+  outstring = string(readbuffer, size);
 }
 
 //we can make a assumption that only after a Vlog file is completely
