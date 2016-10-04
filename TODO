@@ -16,3 +16,4 @@
 16.for batch writes, how can we determine the offset to the vlogfile? if single writer, this's not a problem.
 17.create threads for read/write.
 18.reduce memory copy
+19.direct IO allign
