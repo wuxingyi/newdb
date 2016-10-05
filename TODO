@@ -17,3 +17,7 @@
 17.create threads for read/write.
 18.reduce memory copy
 19.direct IO allign
+20.deal with updated keys: we write to a different position in vlog when 
+   updating, bu we cann't reclaim the space according to current implemetion,
+   because the key still exists. maybe we should write whether the vlog item
+   should be reclaimed on vlog ondisk struct.
