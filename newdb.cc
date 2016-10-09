@@ -19,6 +19,7 @@
 #include <vector>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
@@ -56,6 +57,21 @@ static int compactedVlogFileSize = 0;
 static int traversedKey = 0;
 static int64_t compactTailOffset = 0;
 
+
+void Vlog_rangequery();
+int processoptions(int argc, char **argv);
+void reclaimResource();
+inline std::ostream& operator<<(std::ostream& out, const timespec& t)
+{
+  return out << t.tv_sec << "."<< t.tv_nsec << endl;
+}
+
+inline bool operator<(const timespec &a, const timespec& b)
+{
+  return ((a.tv_sec < b.tv_sec) || 
+		 ((a.tv_sec == b.tv_sec) && 
+		 ((a.tv_nsec < b.tv_nsec))));
+}
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntry struct
 struct VlogOndiskEntry
@@ -63,12 +79,15 @@ struct VlogOndiskEntry
   int64_t keysize = 0;
   int64_t valuesize = 0;
   int64_t magic = 0x007007;
-  VlogOndiskEntry(int64_t keysize_, int64_t valuesize_):keysize(keysize_),
-                                                        valuesize(valuesize_){}
+  timespec timestamp;
+  VlogOndiskEntry(int64_t keysize_, int64_t valuesize_, const timespec &timestamp_):
+				  keysize(keysize_),valuesize(valuesize_),timestamp(timestamp_){}
+
   VlogOndiskEntry(const VlogOndiskEntry &other)
   {
     keysize = other.keysize;
     valuesize = other.valuesize;
+    timestamp = other.timestamp;
   }
 };
 
@@ -76,7 +95,11 @@ struct dboffset
 {
   int64_t offset = 0;
   int64_t length = 0;
-  dboffset(int64_t offset_, int64_t length_):offset(offset_), length(length_){}
+  timespec timestamp = {0};
+  dboffset(int64_t offset_, int64_t length_, const timespec &timestamp_):
+		   offset(offset_), length(length_),timestamp(timestamp_){}
+  dboffset(int64_t offset_, int64_t length_):
+		   offset(offset_), length(length_){}
 };
 
 //we should write the progress of compaction to rocksdb
@@ -107,28 +130,9 @@ void encodeOffset(const dboffset &dbo, string &outstring)
 //decode a string into a dboffset struct
 void decodeOffset(dboffset &dbo, const string &instring)
 {
-  memcpy((char *)&dbo, instring.c_str(), sizeof(struct dboffset));
+  memcpy((char *)&dbo, instring.data(), sizeof(struct dboffset));
 }
 
-//encode a compactOffset struct into a string
-void encodeCompactOffset(const compactOffset &dbo, string &outstring)
-{
-  size_t size = sizeof(struct compactOffset);
-  char p[size];
-
-  memcpy(p, (char *) &dbo, size);
-  
-  //this is ugly, but we cannot use `outstring = p` because p is not
-  //necessarily null-terminated.
-  string temps(p, size);
-  outstring = string(p, size);
-}
-
-//decode a string into a compactOffset struct
-void decodeCompactOffset(compactOffset &dbo, const string &instring)
-{
-  memcpy((char *)&dbo, instring.data(), sizeof(struct compactOffset));
-}
 void removeVlog()
 {
   remove(kDBVlog.c_str());  
@@ -211,15 +215,21 @@ int dbinit()
 
   // open DB
   rocksdb::Status s = rocksdb::DB::Open(options, kDBPath, &db);
-  cout << s.ToString() << endl;
+  //cout << s.ToString() << endl;
   assert(s.ok());
 }
 
 void clearEnv()
 {
+  reclaimResource();
   destroydb();  
   removeVlog();
   removeCompactedVlog();
+  vlogFileSize = 0;
+  compactedVlogFileSize = 0;
+  vlogOffset = 0;
+  compactTailOffset = 0;
+  traversedKey = 0;
 }
 
 void initEnv()
@@ -233,8 +243,13 @@ void initEnv()
 //note:
 //1.delete operation does not have to have to write to vlog 
 //2.after batch operation, every write ops were appened to outsring
+//3.@times is a output parameter, stores timestamp which will be used in db.
+//if a batch contains a write operation, another single write contains a single
+//write operation, we should make sure the first batch served before the single
+//wirte operation, which is now satisfied.
 int encodeBatchVlogEntry(const vector<string> &keys, const vector<string> &values, 
-                         const vector<bool> &deleteflags, string &outstring)
+                         const vector<bool> &deleteflags, string &outstring,
+						 vector<timespec> &times)
 {
   assert(keys.size() == values.size());
   assert(keys.size() == deleteflags.size());
@@ -245,10 +260,15 @@ int encodeBatchVlogEntry(const vector<string> &keys, const vector<string> &value
 
   for (int i = 0; i<iterms;i++)
   {
+	timespec currenttime;
+	clock_gettime(CLOCK_REALTIME, &currenttime);
+	times.push_back(currenttime);
+
     if (true == deleteflags[i])
       continue;
 
-    VlogOndiskEntry fixedentry(keys[i].size(), values[i].size());
+	//every entry in the batch is encoded with timestamp
+    VlogOndiskEntry fixedentry(keys[i].size(), values[i].size(), currenttime);
     memcpy(p, &fixedentry, size);
     string temp(p, size);
 
@@ -258,9 +278,10 @@ int encodeBatchVlogEntry(const vector<string> &keys, const vector<string> &value
 }
 
 //@outstring is going to write to Vlog after a VlogOndiskEntry struct
-int encodeVlogEntry(const string &key, const string &value, string &outstring)
+int encodeVlogEntry(const string &key, const string &value, string &outstring, 
+					const timespec &timestamp)
 {
-  VlogOndiskEntry fixedentry(key.size(), value.size());
+  VlogOndiskEntry fixedentry(key.size(), value.size(), timestamp);
 
   int size = sizeof(struct VlogOndiskEntry);
   char p[size];
@@ -271,7 +292,8 @@ int encodeVlogEntry(const string &key, const string &value, string &outstring)
 }
 
 //@needstring  is used because sometimes we donot need the string
-int decodeVlogEntry(const string &instring, int64_t &keysize, int64_t &valuesize, string &key, string &value, bool needstring)
+int decodeVlogEntry(const string &instring, int64_t &keysize, int64_t &valuesize, 
+					string &key, string &value, bool needstring, timespec &timestamp)
 {
   VlogOndiskEntry *pfixedentry;
 
@@ -282,6 +304,7 @@ int decodeVlogEntry(const string &instring, int64_t &keysize, int64_t &valuesize
   pfixedentry = (VlogOndiskEntry *)p;
   keysize = pfixedentry->keysize;
   valuesize = pfixedentry->valuesize;
+  timestamp = pfixedentry->timestamp;
 
   if (needstring)
   {
@@ -307,7 +330,8 @@ int vlog_write(int vlogFileFd, int64_t offset, const string &kvstring)
 }
 
 //reading a value from vlog, note that we know the offset and length
-int vlog_read(int vlogFileFd, const string &key, string &value, int64_t offset, int64_t length)
+int vlog_read(int vlogFileFd, const string &key, string &value, int64_t offset, 
+			  int64_t length, timespec &time)
 {
   //add a terminal null
   char p[length];
@@ -317,7 +341,7 @@ int vlog_read(int vlogFileFd, const string &key, string &value, int64_t offset, 
   string readkey;
   int64_t keysize, valuesize;
 
-  decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value, true);
+  decodeVlogEntry(vlogbuffer, keysize, valuesize, readkey, value, true, time);
   //cout << "readkey is " << readkey << " , key is " << key << endl;
   assert(readkey == key);
   return 0;
@@ -340,27 +364,32 @@ int Vlog_Get(string key, string &value)
   if (0 != ret)
     return ret;
 
+  //time is not used in this function
+  timespec time;
   dboffset dbo(0, 0);
   decodeOffset(dbo, encodedOffset);
-  vlog_read(vlogFile, key, value, dbo.offset, dbo.length);
+  vlog_read(vlogFile, key, value, dbo.offset, dbo.length, time);
   return 0;
 }
 
 //generate @batchstr, only called by Vlog_BatchPut
 void _vlog_prepareBatch(vector<string> keys, vector<string> values, 
-                        vector<bool> deleteflags, string &batchstr)
+                        vector<bool> deleteflags, string &batchstr,
+						vector<timespec> &times)
 {
-  encodeBatchVlogEntry(keys, values, deleteflags, batchstr);    
+  encodeBatchVlogEntry(keys, values, deleteflags, batchstr, times);    
+  return;
 }
 
 
 //generate a WriteBatch, only called by Vlog_BatchPut
 void _rocksdb_prepareBatch(rocksdb::WriteBatch &batch, vector<string> keys, 
                            vector<string> values, vector<bool> deleteflags,
-                           int64_t baseoffset)
+                           int64_t baseoffset, const vector<timespec> times)
 {
   string dboffsetstring;
   int64_t currentoffset = baseoffset;
+  int fixedsize = sizeof(VlogOndiskEntry);
   for (int i = 0; i< keys.size(); i++)
   {
     if (deleteflags[i] == true)
@@ -370,10 +399,10 @@ void _rocksdb_prepareBatch(rocksdb::WriteBatch &batch, vector<string> keys,
     else
     {
       string dboffsetstring;
-      dboffset tempdbo(currentoffset, values[i].size());
+      dboffset tempdbo(currentoffset, fixedsize + keys[i].size() + values[i].size(), times[i]);
       encodeOffset(tempdbo, dboffsetstring);
       batch.Put(keys[i], dboffsetstring);
-      currentoffset += values[i].size();
+      currentoffset += fixedsize + keys[i].size() + values[i].size();
     }
   }
 
@@ -389,8 +418,10 @@ int Vlog_BatchPut(vector<string> keys, vector<string> values, vector<bool> delet
   assert(size == deleteflags.size());  
 
   string batstr;
+  vector<timespec> times;
+  times.reserve(size);
 
-  _vlog_prepareBatch(keys, values, deleteflags, batstr);
+  _vlog_prepareBatch(keys, values, deleteflags, batstr, times);
 
   //TODO(wuxingyi): we can not allow other threads to change the base offset
   //vlogOffset should be protected by mutex, which is not supported now
@@ -405,7 +436,7 @@ int Vlog_BatchPut(vector<string> keys, vector<string> values, vector<bool> delet
   //first we should get generate a dboffset for each entry
   rocksdb::WriteBatch batch;
 
-  _rocksdb_prepareBatch(batch, keys, values, deleteflags, baseoffset);
+  _rocksdb_prepareBatch(batch, keys, values, deleteflags, baseoffset, times);
 
   rocksdb::Status s = db->Write(rocksdb::WriteOptions(), &batch);
   assert(s.ok());
@@ -422,7 +453,13 @@ int Vlog_Put(string key, string value)
   //can be used as a journal for us to recover the iterm which 
   //has not been written to rocksdb yet.
   string Vlogstring, dboffsetstring;
-  int ret = encodeVlogEntry(key, value, Vlogstring);
+
+  //currenttime help us reclaim outdated vlog entries.
+  //the currentime should be record in both dboffset and VlogOndiskEntry and
+  //compared during compaction.
+  timespec currenttime;
+  clock_gettime(CLOCK_REALTIME, &currenttime);
+  encodeVlogEntry(key, value, Vlogstring, currenttime);
 
   //note that there may be null terminal(because it's binary), so we should use
   //string::string (const char* s, size_t n) constructor
@@ -431,17 +468,15 @@ int Vlog_Put(string key, string value)
 
   //cout << __func__ << " tempv length is " << tempv.size() << endl;
   //we write vlog here
-  ret = vlog_write(vlogFile, vlogOffset, tempv);
+  int ret = vlog_write(vlogFile, vlogOffset, tempv);
   if (0 != ret)
   {
     cout << "write to vlog failed" << endl;
     return -1;
   }
   
-  vlogOffset += Vlogstring.size();
-
   //total length for a the entry is Vlogstring.size()
-  dboffset tempdbo(vlogOffset, Vlogstring.size());
+  dboffset tempdbo(vlogOffset, Vlogstring.size(), currenttime);
   encodeOffset(tempdbo, dboffsetstring);
 
   ret = dbput(key, dboffsetstring);
@@ -451,6 +486,8 @@ int Vlog_Put(string key, string value)
     return -1;
   }
 
+  //advance vlog offset
+  vlogOffset += Vlogstring.size();
   return 0;
 }
 
@@ -458,9 +495,11 @@ int Vlog_Put(string key, string value)
 //in which case, we donot need to call dbget
 static int vlog_get(string key, string encodedOffset, string &value)
 {
+  //time is not used
+  timespec time;
   dboffset dbo(0, 0);
   decodeOffset(dbo, encodedOffset);
-  vlog_read(vlogFile, key, value, dbo.offset, dbo.length);
+  vlog_read(vlogFile, key, value, dbo.offset, dbo.length, time);
   return 0;
 }
 
@@ -492,28 +531,30 @@ void getCptdVlogFileSize()
 static int  nextoffset = 0;
 
 //get keysize/valuesize of an entry by offset
-void decodeEntryByOffset(int64_t offset, int64_t &keysize, int64_t &valuesize)
+void decodeEntryByOffset(int vlogFileFd, int64_t offset, int64_t &keysize, 	
+						 int64_t &valuesize, timespec &time)
 {
   int fixedsize = sizeof(struct VlogOndiskEntry);
   char p[fixedsize];
 
-  size_t readsize = pread(vlogFile, p, fixedsize, offset);
+  size_t readsize = pread(vlogFileFd, p, fixedsize, offset);
   cout << "read " << readsize << " bytes from vlog"<< endl;
   
   string readkey, value;
   string kvstring(p, readsize);
 
   //we can get key/value now.
-  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value, false);
+  decodeVlogEntry(kvstring, keysize, valuesize, readkey, value, false, time);
 }
 
 //get key of an entry by offset
 //@offset is the offset of the key
-void decodePayloadByOffset(int64_t offset, int64_t size, string &outstring)
+void decodePayloadByOffset(int vlogFileFd, int64_t offset, int64_t size, 
+						   string &outstring)
 {
   //now we can get the key/value. 
   char readbuffer[size];
-  int64_t readsize = pread(vlogFile, readbuffer, size, offset);
+  int64_t readsize = pread(vlogFileFd, readbuffer, size, offset);
 
   outstring = string(readbuffer, size);
 }
@@ -528,24 +569,29 @@ void Vlog_StartCompat()
   //comp
   //TODO(wuxingyi): write comoffset to rocksdb
 }
+
 //now we start compact only from zero offset of vlog file.
 void Vlog_Compact(int64_t vlogoffset)
 {
+  if (vlogoffset >= vlogFileSize)
+	return;
+
   //cout << __func__ << " offset is " << vlogoffset << endl;
   int64_t keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
-  decodeEntryByOffset(vlogoffset, keysize, valuesize);
+  timespec vlogtimestamp;
+  decodeEntryByOffset(vlogFile, vlogoffset, keysize, valuesize, vlogtimestamp);
   
   //now we can get the key. 
   string keystring;
   
-  decodePayloadByOffset(vlogoffset + fixedsize, keysize, keystring);
+  decodePayloadByOffset(vlogFile, vlogoffset + fixedsize, keysize, keystring);
   cout << "key is " << keystring << endl;
 
   //we query rocksdb with keystring 
-  string value;
-  int ret = dbget(keystring, value);
+  string dboffsettime;
+  int ret = dbget(keystring, dboffsettime);
   if (0 != ret)
   {
     //it's already deleted,so the space must be freed. 
@@ -564,31 +610,44 @@ void Vlog_Compact(int64_t vlogoffset)
   }
   else
   {
-    //it's still in the db, so we should copy the value to compacted Vlog
-    //add a terminal null
-    int length = fixedsize + keysize + valuesize; 
-    char p[length];
-    size_t readsize = pread(vlogFile, p, length, vlogoffset);
-    assert(readsize == length);
+    //it's still in the db, but we should judge whether it's a outdated value
+	dboffset dbtime(0, 0);
+	decodeOffset(dbtime, dboffsettime);
+	if (vlogtimestamp < dbtime.timestamp)
+	{
+	  //this is a outdated value, we just skip this entry
+	  cout << "this is an outdated value, we just skip" << endl;
+	}
+	else
+	{
+	  //so we should copy the value to compacted Vlog
+	  //add a terminal null
+      int length = fixedsize + keysize + valuesize; 
+      char p[length];
+      size_t readsize = pread(vlogFile, p, length, vlogoffset);
+      assert(readsize == length);
 
-    //write to compactedVlogFile
-    cout << "writing to compactedVlogFile at offset " << compactTailOffset << endl;
+      //write to compactedVlogFile
+      cout << "writing to compactedVlogFile at offset " << compactTailOffset << endl;
+      size_t writesize = pwrite(compactedVlogFile, p, length, compactTailOffset);
+      assert(writesize == length);
 
-    size_t writesize = pwrite(compactedVlogFile, p, length, compactTailOffset);
-    assert(writesize == length);
+      //after write the vlog, we should also update the rocksdb entry
+	  //note that we use the original db timestamp
+      string dboffsetstring;
+      encodeOffset(dboffset(compactTailOffset, length, dbtime.timestamp), dboffsetstring);
 
-    //after write the vlog, we should also update the rocksdb entry
-    string dboffsetstring;
-    encodeOffset(dboffset(compactTailOffset, length), dboffsetstring);
+      ret = dbput(keystring, dboffsetstring);
+      assert(0 == ret);
 
-    ret = dbput(keystring, dboffsetstring);
-    assert(0 == ret);
+	  //advance the copacted vlog tail
+	  compactTailOffset += length;
+	}
 
-    //compact next entry
-    compactTailOffset += length;
-    if (vlogoffset + length < vlogFileSize)
+    if (vlogoffset + fixedsize + keysize + valuesize < vlogFileSize)
     {
-      Vlog_Compact(vlogoffset + length);  
+	  //move to next entry
+      Vlog_Compact(vlogoffset + fixedsize + keysize + valuesize);  
     }
     else
     {
@@ -601,27 +660,34 @@ void Vlog_Compact(int64_t vlogoffset)
 //traverse the whole vlog file
 void Vlog_Traverse(int64_t vlogoffset)
 {
+  if (vlogoffset >= vlogFileSize)
+  {
+	cout << "no more entries in vlog, traverse finished" << endl;; 
+	return;
+  }
+
   cout << "offset is " << vlogoffset << endl;
   int64_t keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
-  decodeEntryByOffset(vlogoffset, keysize, valuesize);
+  timespec vlogtime;
+  decodeEntryByOffset(vlogFile, vlogoffset, keysize, valuesize, vlogtime);
   cout << keysize << endl;
   cout << valuesize << endl;
 
   //now we can get the key. 
   string keystring;
   
-  decodePayloadByOffset(vlogoffset + fixedsize, keysize, keystring);
+  decodePayloadByOffset(vlogFile, vlogoffset + fixedsize, keysize, keystring);
   cout << "key is " << keystring << endl;
 
   //now we can get the value. 
   string valuestring;
   
-  decodePayloadByOffset(vlogoffset + fixedsize + keysize, valuesize, valuestring);
+  decodePayloadByOffset(vlogFile, vlogoffset + fixedsize + keysize, valuesize, valuestring);
   //cout << "value is " << valuestring << endl;
 
-  traversedKey++;
+  //traversedKey++;
   getVlogFileSize();
   nextoffset = vlogoffset + fixedsize + keysize + valuesize;
   if (nextoffset < vlogFileSize)
@@ -631,30 +697,37 @@ void Vlog_Traverse(int64_t vlogoffset)
 //traverse the compacted vlog file
 void Vlog_TraverseCptedVlog(int64_t vlogoffset)
 {
+  if (vlogoffset >= compactedVlogFileSize)
+  {
+	cout << "no more entries in compacted vlog, traverse finished" << endl;; 
+	return;
+  }
+
   cout << "offset is " << vlogoffset << endl;
   int64_t keysize, valuesize;
   int fixedsize = sizeof(struct VlogOndiskEntry);
 
-  decodeEntryByOffset(vlogoffset, keysize, valuesize);
+  timespec time;
+  decodeEntryByOffset(compactedVlogFile, vlogoffset, keysize, valuesize, time);
   cout << keysize << endl;
   cout << valuesize << endl;
 
   //now we can get the key. 
   string keystring;
   
-  decodePayloadByOffset(vlogoffset + fixedsize, keysize, keystring);
+  decodePayloadByOffset(compactedVlogFile, vlogoffset + fixedsize, keysize, keystring);
   cout << "key is " << keystring << endl;
 
   //now we can get the value. 
   string valuestring;
   
-  decodePayloadByOffset(vlogoffset + fixedsize + keysize, valuesize, valuestring);
+  decodePayloadByOffset(compactedVlogFile, vlogoffset + fixedsize + keysize, valuesize, valuestring);
   cout << "value is " << valuestring << endl;
 
   traversedKey++;
   nextoffset = vlogoffset + fixedsize + keysize + valuesize;
   if (nextoffset < compactedVlogFileSize)
-    Vlog_Traverse(nextoffset);
+    Vlog_TraverseCptedVlog(nextoffset);
 }
 void restartEnv()
 {
@@ -670,47 +743,65 @@ void reclaimResource()
   if (nullptr != db)
     delete db;
 }
+
+//simple put/get test
 void TEST_readwrite()
 {
   restartEnv();
 
+  cout << __func__ << ": STARTED" << endl;
   for(int i =0; i < testkeys; i++)
   {
     int num = rand();
     string value(num/10000000,'c'); 
     string key = to_string(num);
     
-    //cout << "before Put: key is " << key << ", value is " <<  value 
-    //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+    cout << "before Put: key is " << key << ", value is " <<  value 
+         << " key length is " << key.size() << ", value length is " << value.size() << endl;
     Vlog_Put(key, value);
-    //value.clear();
-    //Vlog_Get(key, value);
-    //cout << "after  Get: key is " << key << ", value is " << value 
-    //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
-    //cout << "---------------------------------------------------" << endl;
+    value.clear();
+    Vlog_Get(key, value);
+    cout << "after  Get: key is " << key << ", value is " << value 
+         << " key length is " << key.size() << ", value length is " << value.size() << endl;
+    cout << "---------------------------------------------------" << endl;
   }
+
+  Vlog_rangequery();
+  cout << __func__ << ": FINISHED" << endl;
+}
+
+//test key update
+void TEST_update()
+{
+  restartEnv();
+
+  cout << __func__ << ": STARTED" << endl;
+  for(int i = 0; i < testkeys; i++)
+  {
+	string kv = "wuxingyi" + to_string(i);
+	Vlog_Put(kv, kv);
+	Vlog_Put(kv, kv);
+  }
+  
+  Vlog_rangequery();
+  cout << __func__ << ": FINISHED" << endl;
 }
 
 void TEST_writedelete()
 {
   restartEnv();
 
+  cout << __func__ << ": STARTED" << endl;
   string value(1024,'c'); 
-  for(int i =0; i < testkeys; i++)
+  for(int i = 0; i < testkeys; i++)
   {
     string key = to_string(rand());
     Vlog_Put(key, value);
     Vlog_Delete(key);
-    //Vlog_Get(key, value);
   }
-}
 
-void TEST_search()
-{
-  initEnv();
-  string value;
-  Vlog_Get("1412620409", value);
-  cout << value << endl;
+  Vlog_rangequery();
+  cout << __func__ << ": FINISHED" << endl;
 }
 
 int processoptions(int argc, char **argv)
@@ -741,22 +832,25 @@ int processoptions(int argc, char **argv)
   return 0;
 }
 
-void TEST_Compact(int argc, char **argv)
+void TEST_Compact()
 {
-  processoptions(argc, argv);
-
   //1.first we test delete all k/v pairs
-  //TEST_writedelete();
-  //getVlogFileSize();
-  //Vlog_Compact(0);
-
-  //2.some keys are deleted
-  TEST_readwrite();
+  cout << __func__ << "STARTED" << endl;
+  restartEnv();
+  TEST_writedelete();
   getVlogFileSize();
   Vlog_Compact(0);
   getCptdVlogFileSize();
-  //after compaction, we should traverse it to testify it.
   Vlog_TraverseCptedVlog(0);
+
+  //2.some keys are deleted
+  restartEnv();
+  TEST_update();
+  getVlogFileSize();
+  Vlog_Compact(0);
+  getCptdVlogFileSize();
+  Vlog_TraverseCptedVlog(0);
+  cout << __func__ << "FINISHED" << endl;
 }
 
 void Vlog_query(string key, string offset)
@@ -775,7 +869,7 @@ void Vlog_rangequery()
   string value;
   for (it->SeekToFirst(); it->Valid(); it->Next()) 
   {
-    Vlog_query(it->key().ToString(), it->value().ToString());  
+    Vlog_query(string(it->key().data(), it->key().size()), string(it->value().data(), it->value().size()));  
   }
 
   assert(it->status().ok()); // Check for any errors found during the scan
@@ -833,39 +927,50 @@ void Vlog_parallelrangequery()
 //  
 //
 //}
-void TEST_rangequery(int argc, char **argv) 
+void TEST_rangequery() 
 {
-  processoptions(argc, argv);
+  cout << __func__ << ": STARTED" << endl;
+  restartEnv();
   TEST_readwrite();
   Vlog_rangequery();
   Vlog_parallelrangequery();
+  cout << __func__ << ": FINISHED" << endl;
 }
 
-void TEST_Batch(int argc, char **argv)
+void TEST_Batch()
 {
-  processoptions(argc, argv);
+  cout << __func__ << ": STARTED" << endl;
   restartEnv();
 
   vector<string> keys;
   vector<string> values;
   vector<bool> deleteflags;
-  string randkey;
-  string randvalue;
 
   for (int i = 0; i < testkeys; i++)
   {
-    randkey = to_string(rand());
+	string randkey = to_string(rand());
+	string randvalue = string(rand()/10000000, 'c');
     keys.push_back(randkey);
-    randvalue = string(rand()/10000, 'c');
     values.push_back(randvalue);
     deleteflags.push_back(false);
   }
   
+  //update half of them
   for (int i = 0; i < testkeys; i++)
   {
     if (i % 2 == 0)
     {
-      //cout << "we need to delete " << randkey << endl;
+      keys.push_back(keys[i]);
+      values.push_back("wuxingyi");
+      deleteflags.push_back(false);
+    }
+  }
+
+  //delete half of them
+  for (int i = 0; i < testkeys; i++)
+  {
+    if (i % 2 == 1)
+    {
       keys.push_back(keys[i]);
       values.push_back("");
       deleteflags.push_back(true);
@@ -873,37 +978,33 @@ void TEST_Batch(int argc, char **argv)
   }
 
   Vlog_BatchPut(keys, values, deleteflags);
-  keys.clear();
-  values.clear();
-  deleteflags.clear();
 
+  //now we should lauch a query
+  Vlog_rangequery();
+
+  getVlogFileSize();
   Vlog_Traverse(0);
+  Vlog_Compact(0);
+  getCptdVlogFileSize();
+  Vlog_TraverseCptedVlog(0);
+  cout << "we got " << traversedKey << " keys"<< endl;
+
+  cout << __func__ << "FINISHED" << endl;
+}
+
+//run all TEST_* test cases
+void TEST_ALL(int argc, char **argv)
+{
+  processoptions(argc, argv);
+  TEST_readwrite();
+  TEST_update();
+  TEST_Compact();
+  TEST_rangequery();
+  TEST_Batch();
 }
 
 int main(int argc, char **argv) 
 {
-  //initEnv();
-  //Vlog_Traverse(0);
-  TEST_Batch(argc, argv);
-  //TEST_rangequery(argc, argv);
-  //restartEnv();
-  //TEST_Compact(argc, argv);
-  //processoptions(argc, argv);
-  //TEST_readwrite();
-  //Vlog_rangequery();
-  //Vlog_parallelrangequery();
-  //searchtest();
-  //processoptions(argc, argv);
-  //TEST_readwrite();
-  //TEST_writedelete();
-  //initEnv();
-  //getVlogFileSize();
-  //Vlog_Traverse(0);
-  //Vlog_Compact(0);
-  //Vlog_Traverse(0);
-  //cout << "we got " << traversedKey << " keys"<< endl;
-  //restartEnv();
-  //TEST_memcpy();
-  //reclaimResource();
+  TEST_ALL(argc, argv);
   return 0;
 }
