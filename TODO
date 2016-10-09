@@ -22,5 +22,5 @@
    because the key still exists. maybe we should write whether the vlog item
    should be reclaimed on vlog ondisk struct.
 21.deal with a batch with Get(a writebatch would never have a read operation, so this's not a problem)
-22.handle read/write errors, like EINTR
+22.handle read/write errors, like EINTR (DONE)
 23.change Vlog_query interface, abandon current std out version

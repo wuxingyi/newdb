@@ -320,11 +320,58 @@ int decodeVlogEntry(const string &instring, int64_t &keysize, int64_t &valuesize
 
 int vlog_write(int vlogFileFd, int64_t offset, const string &kvstring)
 {
-  size_t writesize = pwrite(vlogFileFd, kvstring.c_str(), kvstring.size(), offset);
+  size_t left = kvstring.size();
+  const char *src  = kvstring.data();
+  
+  while (0 != left)
+  {
+    ssize_t done = pwrite(vlogFileFd, src, left, offset);
+    if (done < 0)
+    {
+      // error while writing to file
+      if (errno == EINTR)
+      {
+        // write was interrupted, try again.
+        continue;
+      }
+      return errno;
+    }
+    left -= done;
+    offset += done;
+    src += done;
+  }
+  assert(0 == left);
+  return 0;
+}
 
-  cout << "writesize is " << writesize << endl;
-  cout << "kvstring size is is " << kvstring.size() << endl;
-  assert(writesize == kvstring.size());
+int pread_wrapper(int fd, char *p, int64_t size, int64_t offset)
+{
+  size_t left = size;
+  char* ptr = p;
+  while (left > 0)
+  {
+    ssize_t done = pread(fd, ptr, left, offset);
+    if (done < 0)
+    {
+      // error while reading from file
+      if (errno == EINTR)
+      {
+        // read was interrupted, try again.
+        continue;
+      }
+      return errno;
+    }
+    else if (done == 0)
+    {
+      // Nothing more to read
+      break;
+    }
+
+    // Read `done` bytes
+    ptr += done;
+    offset += done;
+    left -= done;
+  }
 
   return 0;
 }
@@ -335,7 +382,13 @@ int vlog_read(int vlogFileFd, const string &key, string &value, int64_t offset,
 {
   //add a terminal null
   char p[length];
-  size_t readsize = pread(vlogFileFd, p, length, offset);
+  int ret = pread_wrapper(vlogFileFd, p, length, offset);
+  if (0 != ret)
+  {
+    cerr << "error in reading vlog entry, error is " << ret << endl;
+    return ret;
+  }
+
   string vlogbuffer(p, length);
 
   string readkey;
@@ -368,7 +421,12 @@ int Vlog_Get(string key, string &value)
   timespec time;
   dboffset dbo(0, 0);
   decodeOffset(dbo, encodedOffset);
-  vlog_read(vlogFile, key, value, dbo.offset, dbo.length, time);
+  ret = vlog_read(vlogFile, key, value, dbo.offset, dbo.length, time);
+  if (0 != ret)
+  {
+    return ret;
+  }
+
   return 0;
 }
 
@@ -430,7 +488,12 @@ int Vlog_BatchPut(vector<string> keys, vector<string> values, vector<bool> delet
   vlogOffset += batstr.size();
   
   //now we should write to vlog
-  vlog_write(vlogFile, baseoffset, batstr);
+  int ret = vlog_write(vlogFile, baseoffset, batstr);
+  if (0 != ret)
+  {
+	cerr << "error in writting vlog entry, error is " << ret << endl;
+	return -1;
+  }
   
   //after writing to vlog, it's time to write to rocksdb
   //first we should get generate a dboffset for each entry
@@ -471,8 +534,8 @@ int Vlog_Put(string key, string value)
   int ret = vlog_write(vlogFile, vlogOffset, tempv);
   if (0 != ret)
   {
-    cout << "write to vlog failed" << endl;
-    return -1;
+    cerr << "error in writting vlog entry, error is " << ret << endl;
+    return ret;
   }
   
   //total length for a the entry is Vlogstring.size()
@@ -531,32 +594,43 @@ void getCptdVlogFileSize()
 static int  nextoffset = 0;
 
 //get keysize/valuesize of an entry by offset
-void decodeEntryByOffset(int vlogFileFd, int64_t offset, int64_t &keysize, 	
+int decodeEntryByOffset(int vlogFileFd, int64_t offset, int64_t &keysize, 	
 						 int64_t &valuesize, timespec &time)
 {
   int fixedsize = sizeof(struct VlogOndiskEntry);
   char p[fixedsize];
 
-  size_t readsize = pread(vlogFileFd, p, fixedsize, offset);
-  cout << "read " << readsize << " bytes from vlog"<< endl;
+  int ret = pread_wrapper(vlogFileFd, p, fixedsize, offset);
+  if (0 != ret)
+  {
+    cerr << "error in writting vlog entry, error is " << ret << endl;
+    return -1;
+  }
   
   string readkey, value;
-  string kvstring(p, readsize);
+  string kvstring(p, fixedsize);
 
   //we can get key/value now.
   decodeVlogEntry(kvstring, keysize, valuesize, readkey, value, false, time);
+  return 0;
 }
 
 //get key of an entry by offset
 //@offset is the offset of the key
-void decodePayloadByOffset(int vlogFileFd, int64_t offset, int64_t size, 
+int decodePayloadByOffset(int vlogFileFd, int64_t offset, int64_t size, 
 						   string &outstring)
 {
   //now we can get the key/value. 
   char readbuffer[size];
-  int64_t readsize = pread(vlogFileFd, readbuffer, size, offset);
+  int ret = pread_wrapper(vlogFileFd, readbuffer, size, offset);
+  if (0 != ret)
+  {
+    cerr << "error in writting vlog entry, error is " << ret << endl;
+    return -1;
+  }
 
   outstring = string(readbuffer, size);
+  return 0;
 }
 
 //we can make a assumption that only after a Vlog file is completely
@@ -624,8 +698,11 @@ void Vlog_Compact(int64_t vlogoffset)
 	  //add a terminal null
       int length = fixedsize + keysize + valuesize; 
       char p[length];
-      size_t readsize = pread(vlogFile, p, length, vlogoffset);
-      assert(readsize == length);
+      int readret = pread_wrapper(vlogFile, p, length, vlogoffset);
+      if (0 != readret)
+      {
+        cerr << "error in writting vlog entry, error is " << readret << endl;
+      }
 
       //write to compactedVlogFile
       cout << "writing to compactedVlogFile at offset " << compactTailOffset << endl;
