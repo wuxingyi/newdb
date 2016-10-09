@@ -21,3 +21,4 @@
    updating, bu we cann't reclaim the space according to current implemetion,
    because the key still exists. maybe we should write whether the vlog item
    should be reclaimed on vlog ondisk struct.
+21.deal with a batch with Get(a writebatch would never have a read operation, so this's not a problem)
