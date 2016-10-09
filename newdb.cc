@@ -835,7 +835,7 @@ int processoptions(int argc, char **argv)
 void TEST_Compact()
 {
   //1.first we test delete all k/v pairs
-  cout << __func__ << "STARTED" << endl;
+  cout << __func__ << ": STARTED" << endl;
   restartEnv();
   TEST_writedelete();
   getVlogFileSize();
@@ -850,7 +850,7 @@ void TEST_Compact()
   Vlog_Compact(0);
   getCptdVlogFileSize();
   Vlog_TraverseCptedVlog(0);
-  cout << __func__ << "FINISHED" << endl;
+  cout << __func__ << ": FINISHED" << endl;
 }
 
 void Vlog_query(string key, string offset)
@@ -989,7 +989,7 @@ void TEST_Batch()
   Vlog_TraverseCptedVlog(0);
   cout << "we got " << traversedKey << " keys"<< endl;
 
-  cout << __func__ << "FINISHED" << endl;
+  cout << __func__ << ": FINISHED" << endl;
 }
 
 //run all TEST_* test cases
