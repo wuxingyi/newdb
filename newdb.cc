@@ -1014,6 +1014,33 @@ void TEST_rangequery()
   cout << __func__ << ": FINISHED" << endl;
 }
 
+void TEST_bigamoutdata()
+{
+  cout << __func__ << ": STARTED" << endl;
+  restartEnv();
+
+  vector<string> keys;
+  vector<string> values;
+  vector<bool> deleteflags;
+
+  for(int j = 0; j < 100; j++)
+  {
+    for (int i = 0; i < testkeys; i++)
+    {
+      string randkey = to_string(rand());
+      string randvalue = string(rand()/1000000, 'c');
+      keys.push_back(randkey);
+      values.push_back(randvalue);
+      deleteflags.push_back(false);
+    }
+    Vlog_BatchPut(keys, values, deleteflags);
+    keys.clear();
+    values.clear();
+    deleteflags.clear();
+  }
+
+  cout << __func__ << ": FINISHED" << endl;
+}
 void TEST_Batch()
 {
   cout << __func__ << ": STARTED" << endl;
@@ -1078,6 +1105,7 @@ void TEST_ALL(int argc, char **argv)
   TEST_Compact();
   TEST_rangequery();
   TEST_Batch();
+  TEST_bigamoutdata();
 }
 
 int main(int argc, char **argv) 

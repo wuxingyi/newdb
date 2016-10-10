@@ -26,3 +26,4 @@
 23.change Vlog_query interface, abandon current std out version
 24.background thread compaction
 25.make it a daemon, processing put/get requests
+26.control the size of each write batch
