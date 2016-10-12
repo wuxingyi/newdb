@@ -24,6 +24,7 @@
 21.deal with a batch with Get(a writebatch would never have a read operation, so this's not a problem)
 22.handle read/write errors, like EINTR (DONE)
 23.change Vlog_query interface, abandon current std out version
-24.background thread compaction
+24.background thread compaction: when do we conduct a compaction?
 25.make it a daemon, processing put/get requests
 26.control the size of each write batch
+27.how to record compaction status
