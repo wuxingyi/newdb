@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <boost/program_options.hpp>
+#include <boost/algorithm/string.hpp>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -44,7 +45,7 @@ static const int Vlogsize = 1<<8;
 static bool syncflag = false;
 static const int INVALID_FD = -1;
 
-const std::string kDBPath = "./DBDATA/ROCKSDB";
+const std::string kDBPath = "DBDATA/ROCKSDB";
 const std::string kDBVlogBase = "./DBDATA/Vlog";
 const std::string kDBCompactedVlog = "./DBDATA/CompactedVlog";
 static rocksdb::DB* db = nullptr;
@@ -211,7 +212,7 @@ public:
   {
     filename = kDBVlogBase + to_string(seq);
     fd = open(filename.c_str(), O_RDWR | O_CREAT | O_SYNC, 0644);
-    if ( 0 < fd)
+    if ( 0 > fd)
     {
       cout << "create fd failed" << endl;
     }
@@ -340,9 +341,6 @@ private:
 public:
   DBWrapper(const string &path):dbPath(path)
   {
-    int ret = mkdir(dbPath.c_str(), 0644);
-    cout << ret << endl;
-
     rocksdb::Options options;
     // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
     options.IncreaseParallelism();
