@@ -62,6 +62,12 @@ int createFd(string path);
 
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntryHeader struct
+inline bool operator<(const timespec &a, const timespec& b)
+{
+  return ((a.tv_sec < b.tv_sec) || 
+		 ((a.tv_sec == b.tv_sec) && 
+		 ((a.tv_nsec < b.tv_nsec))));
+}
 struct VlogOndiskEntryHeader
 {
 private:
@@ -215,6 +221,11 @@ public:
   int64_t GetTailOffset()
   {
     return tailOffset;
+  }
+
+  void AdvanceOffset(int64_t advoffset)
+  {
+    tailOffset += advoffset;
   }
 
   VlogFile(int seq_)
@@ -421,6 +432,7 @@ private:
   vector<VlogFile *> allfiles; //heap allocated
   int currentSeq = 0;
   const string vfmkey = "VlogFileManagerMaxSeq";
+  VlogFile *compactingVf;      //the compacting vlogfile
 
   //we use rocksdb to store vlog manager metadata
   //it contains information about the biggest seq of vlog
@@ -512,6 +524,19 @@ public:
     return allfiles[seq];  
   }
 
+  int *RemoveVlogFile(int seq)
+  {
+    if (nullptr != allfiles[seq])
+    {
+      VlogFile *vf = allfiles[seq];
+      vf->Delete();
+
+      //(fixme) make sure this file is no more used by anyone
+      allfiles[seq] = nullptr;
+      delete vf;
+    }
+  }
+
   ~VlogFileManager()
   {
     for (auto i : allfiles)
@@ -574,8 +599,6 @@ private:
 
     //string vheaderkey(pkey, vheader.GetKeySize());
     //cout << "key is " << vheaderkey << endl;
-
-
     char *pvalue = (char *)malloc(vheader.GetValueSize());
     ret = vf->Read(pvalue, vheader.GetValueSize(), vlogoffset + fixedsize + vheader.GetKeySize());
     if (0 != ret)
@@ -598,6 +621,149 @@ public:
       if (nullptr != i)
         traverseVlog(i->GetSeq(), 0);
     }
+  }
+
+private:
+  //compact the vlog with (srcseq, vlogoffset) to destseq 
+  //(fixme)make sure newseq VlogFile is create and put to allfiles vector
+  int compactToNewVlog(int srcseq, int destseq, int64_t vlogoffset)
+  {
+    if (nullptr == allfiles[srcseq])
+    {
+      cout << "file does not exist" << endl;
+      assert(0);
+      return -1;
+    }
+
+    VlogFile *srcvf = allfiles[srcseq];
+    if (vlogoffset >= srcvf->GetTailOffset())
+    {
+      cout << "no more entries in vlog, compaction finished" << endl;; 
+      return 0;
+    }
+
+    cout << "offset is " << vlogoffset << endl;
+    int64_t keysize, valuesize;
+    int fixedsize = sizeof(struct VlogOndiskEntryHeader);
+
+    char p[fixedsize];
+  
+    int ret = srcvf->Read(p, fixedsize, vlogoffset);
+    if (0 != ret)
+    {
+      cerr << "error in writting vlog entry, error is " << ret << endl;
+      return -1;
+    }
+    
+    string readkey, value;
+    string kvstring(p, fixedsize);
+
+    //got keysize/valeusize from kvstring
+    VlogOndiskEntryHeader vheader(0, 0);
+    vheader.decode(kvstring);
+
+    cout << "entry keysize is " << vheader.GetKeySize() << endl;
+    cout << "entry valuesize is " << vheader.GetValueSize() << endl;
+  
+    //the stack may be not enough, so use head allocated memory
+    char *pkey = (char *)malloc(vheader.GetKeySize());
+    ret = srcvf->Read(pkey, vheader.GetKeySize(), vlogoffset + fixedsize);
+    if (0 != ret)
+    {
+      cerr << "read key failed, error is " << ret << endl;
+      return -1;
+    }
+
+    string vheaderkey(pkey, vheader.GetKeySize());
+    cout << "key is " << vheaderkey << endl;
+
+    //we query rocksdb with keystring 
+    string locator;
+    ret = pDb->Get(vheaderkey, locator);
+    if (0 != ret)
+    {
+      //it's already deleted,so the space must be freed. 
+      //actually we do nothing here, because we append the exist entry
+      //to another new vlog file, as a entry should be deleted, we just
+      //ignore it and move to the next entry.
+      if (vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize() < srcvf->GetTailOffset())
+      {
+        compactToNewVlog(srcseq, destseq, vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize());
+      }
+      else
+      {
+        //all items has been compacted
+        RemoveVlogFile(srcseq);
+      }
+    }
+    else
+    {
+      //it's still in the db, but we should judge whether it's a outdated value
+      EntryLocator dblocator(0, 0);
+      dblocator.decode(locator);
+
+      timespec vlogtimestamp = vheader.GetTimeStamp();
+      if (vlogtimestamp < dblocator.GetTimeStamp())
+      {
+        //this is a outdated value, we just skip this entry
+        cout << "this is an outdated value, we just skip" << endl;
+      }
+      else
+      {
+        VlogFile *destvf = compactingVf;
+        assert(nullptr != destvf);
+
+        //so we should copy the value to compacted Vlog
+        //add a terminal null
+        int length = fixedsize + vheader.GetKeySize() + vheader.GetValueSize(); 
+        char *p = (char *)malloc(length);
+        int readret = srcvf->Read(p, length, vlogoffset);
+        if (0 != readret)
+        {
+          cerr << "error in reding src entry, error is " << readret << endl;
+        }
+
+        //write to dest vlogfile
+        cout << "writing to destvf at offset " << destvf->GetTailOffset() << endl;
+        int writeret = destvf->Write(string(p, length));
+        assert(writeret == 0);
+
+        //after write the vlog, we should also update the rocksdb entry
+        //note that we use the original db timestamp
+        string EntryLocatorString;
+        EntryLocator dblocator(destvf->GetTailOffset(), length, dblocator.GetTimeStamp(), destseq);
+        dblocator.encode(EntryLocatorString);
+
+        ret = pDb->Put(vheaderkey, EntryLocatorString);
+        assert(0 == ret);
+
+        //advance the copacted vlog tail
+        destvf->AdvanceOffset(length);
+      }
+
+      if (vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize() < srcvf->GetTailOffset())
+      {
+        //move to next entry
+        compactToNewVlog(srcseq, destseq, vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize());
+      }
+      else
+      {
+        //all items has been compacted
+        RemoveVlogFile(srcseq);
+      }
+    }
+  }
+public:
+  //(fixme) record the process of compaction
+  int CompactVlog(int srcseq, int64_t vlogoffset)
+  {
+    //we should apply a new VlogFile for compaction
+    //maybe we should use a big number seq to avoid seq race condition
+    int seq = 999;
+    compactingVf = new VlogFile(seq);
+    compactToNewVlog(srcseq, seq, 0);
+
+    //after compaction, the file should be closed
   }
 };
 
@@ -725,12 +891,6 @@ inline std::ostream& operator<<(std::ostream& out, const timespec& t)
   return out << t.tv_sec << "."<< t.tv_nsec << endl;
 }
 
-inline bool operator<(const timespec &a, const timespec& b)
-{
-  return ((a.tv_sec < b.tv_sec) || 
-		 ((a.tv_sec == b.tv_sec) && 
-		 ((a.tv_nsec < b.tv_nsec))));
-}
 
 
 //int dbinit();
@@ -1776,6 +1936,11 @@ public:
     pop->penv->pvfm->TraverAllVlogs();
   }
 
+  void TEST_Compact()
+  {
+    pop->penv->pvfm->CompactVlog(0, 0);
+  }
+
   void TEST_readwrite()
   {
     cout << __func__ << ": STARTED" << endl;
@@ -1804,5 +1969,6 @@ int main(int argc, char **argv)
   TEST test(argc, argv);
   test.TEST_readwrite();
   test.TEST_Traverse();
+  test.TEST_Compact();
   return 0;
 }
