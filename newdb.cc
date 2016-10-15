@@ -27,7 +27,7 @@
 
 /*
 VLOG FORMAT
-note that keyszie and valuesize is fixed size, always take 8+8+8=24 bytes.
+note that keyszie,valuesize,magic and timestamp is fixed size, always take 40 bytes.
 definiton of message vlogkeyvalue:
 we set keystring and valuestring as optional because we will decode 
 keysize and valuesize.
@@ -88,6 +88,8 @@ public:
   VlogOndiskEntryHeader(int64_t keysize_, int64_t valuesize_, const timespec &timestamp_):
 				  keysize(keysize_),valuesize(valuesize_),timestamp(timestamp_){}
 
+  VlogOndiskEntryHeader(int64_t keysize_, int64_t valuesize_):
+				  keysize(keysize_),valuesize(valuesize_){}
   VlogOndiskEntryHeader(const VlogOndiskEntryHeader &other)
   {
     keysize = other.keysize;
@@ -155,6 +157,7 @@ public:
     //necessarily null-terminated.
     outstring = string(p, DBSTRUCTSIZE);
   }
+
   void decode(const string &instring)
   {
     memcpy((char *)this, instring.data(), sizeof(struct EntryLocator));
@@ -194,6 +197,11 @@ public:
     return kDBVlogBase + to_string(seq);
   }
 
+  int GetFd()
+  {
+    return fd;
+  }
+
   string GetFileName()
   {
     return filename;
@@ -203,21 +211,29 @@ public:
   {
     return seq;
   }
+
   int64_t GetTailOffset()
   {
     return tailOffset;
   }
 
-  VlogFile(int seq)
+  VlogFile(int seq_)
   {
-    filename = kDBVlogBase + to_string(seq);
+    filename = kDBVlogBase + to_string(seq_);
     fd = open(filename.c_str(), O_RDWR | O_CREAT | O_SYNC, 0644);
-    if ( 0 > fd)
+    if (0 > fd)
     {
       cout << "create fd failed" << endl;
     }
 
-    tailOffset = 0;
+    //it's possible the file already exists, so we should change the offset
+    struct stat fileStat;  
+    if( -1 == stat(filename.c_str(), &fileStat))  
+    {  
+      assert(0); 
+    }  
+    tailOffset = fileStat.st_size;
+    seq = seq_;
   }
   
   ~VlogFile()
@@ -232,7 +248,13 @@ public:
   
   bool IsFull(size_t size)
   {
-    return (size + tailOffset > maxVlogFileSize);
+    if (size + tailOffset > maxVlogFileSize)
+    {
+      cout << "this file is FULL" << endl;
+      return true;
+    }
+
+    return false;
   }
 
   //write at offset tailOffset
@@ -294,42 +316,6 @@ public:
 
     return 0;
   }
-
-  void Traverse(int64_t vlogoffset)
-  {
-    //if (vlogoffset >= tailOffset)
-    //{
-    //  cout << "no more entries in vlog, traverse finished" << endl;; 
-    //  return;
-    //}
-
-    //cout << "offset is " << vlogoffset << endl;
-    //int64_t keysize, valuesize;
-    //int fixedsize = sizeof(struct VlogOndiskEntryHeader);
-
-    //timespec vlogtime;
-    //decodeEntryByOffset(fd, vlogoffset, keysize, valuesize, vlogtime);
-    //cout << keysize << endl;
-    //cout << valuesize << endl;
-
-    ////now we can get the key. 
-    //string keystring;
-    //
-    //decodePayloadByOffset(fd, vlogoffset + fixedsize, keysize, keystring);
-    //cout << "key is " << keystring << endl;
-
-    ////now we can get the value. 
-    //string valuestring;
-    //decodePayloadByOffset(fd, vlogoffset + fixedsize + keysize, valuesize, valuestring);
-    ////cout << "value is " << valuestring << endl;
-
-    ////traversedKey++;
-    //getVlogFileSize();
-    //nextoffset = vlogoffset + fixedsize + keysize + valuesize;
-    //if (nextoffset < vlogFileSize)
-    //  Vlog_Traverse(nextoffset);
-    //}
-    }
 };
 
 class DBWrapper
@@ -341,6 +327,8 @@ private:
 public:
   DBWrapper(const string &path):dbPath(path)
   {
+    int ret = mkdir(dbPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+
     rocksdb::Options options;
     // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
     options.IncreaseParallelism();
@@ -351,7 +339,7 @@ public:
 
     // open DB
     rocksdb::Status s = rocksdb::DB::Open(options, dbPath, &db);
-    //cout << s.ToString() << endl;
+    cout << s.ToString() << endl;
     assert(s.ok());
   }
 
@@ -430,7 +418,7 @@ public:
 struct VlogFileManager
 {
 private:
-  vector<VlogFile *> allfiles = {nullptr}; //heap allocated
+  vector<VlogFile *> allfiles; //heap allocated
   int currentSeq = 0;
   const string vfmkey = "VlogFileManagerMaxSeq";
 
@@ -460,29 +448,34 @@ private:
     {
       //no key is found, so this is no vlog files
       currentSeq = 0;
+      cout << "current seq is " << currentSeq << endl;
     }
     else
     {
-      int tempseq;
-      memcpy(&tempseq, seqstring.c_str(), seqstring.size());  
-      currentSeq = tempseq;
-      for (int i = 0; i < currentSeq; i++)
+      currentSeq = atoi(seqstring.c_str());
+      cout << "current seq is " << currentSeq << endl;
+      if (0 < currentSeq)
       {
-        //(TODO)This may cause to many open files, must be fixed.
-        if (true == isVlogExist(VlogFile::GetFileNameBySeq(i)))
+        for (int i = 0; i < currentSeq; i++)
         {
-          VlogFile *vf = new VlogFile(i);  
-          allfiles.push_back(vf);
-        }
-        else
-        {
-          allfiles.push_back(nullptr);
+          //(TODO)This may cause to many open files, must be fixed.
+          if (true == isVlogExist(VlogFile::GetFileNameBySeq(i)))
+          {
+            VlogFile *vf = new VlogFile(i);  
+            allfiles.push_back(vf);
+          }
+          else
+          {
+            allfiles.push_back(nullptr);
+          }
         }
       }
     }
 
     //put the VlogFile to vector
     VlogFile *vf = new VlogFile(currentSeq); 
+    assert(nullptr != vf);
+
     allfiles.push_back(vf);
 
     //put seq 0 to rocksdb
@@ -491,7 +484,6 @@ private:
       pDb->SyncPut(vfmkey, to_string(currentSeq));
     }
   }
-
 
 public:
   //make sure rocksdb db instance has been initiated
@@ -505,8 +497,8 @@ public:
   {
     if (allfiles[currentSeq]->IsFull(size))
     {
-      VlogFile *vf = new VlogFile(currentSeq); 
       ++currentSeq;
+      VlogFile *vf = new VlogFile(currentSeq); 
       allfiles.push_back(vf);
       pDb->SyncPut(vfmkey, to_string(currentSeq));
     }
@@ -528,6 +520,85 @@ public:
         delete i;
     }
   }
+
+private:
+  //traverse a VlogFile with sequence seq
+  int traverseVlog(int seq, int vlogoffset)
+  {
+    if (nullptr == allfiles[seq])
+    {
+      cout << "file does not exist" << endl;
+      return -1;
+    }
+
+    VlogFile *vf = allfiles[seq];
+
+    if (vlogoffset >= vf->GetTailOffset())
+    {
+      cout << "no more entries in vlog, traverse finished" << endl;; 
+      return 0;
+    }
+
+    cout << "offset is " << vlogoffset << endl;
+    int64_t keysize, valuesize;
+    int fixedsize = sizeof(struct VlogOndiskEntryHeader);
+
+    timespec vlogtime;
+    char p[fixedsize];
+  
+    int ret = vf->Read(p, fixedsize, vlogoffset);
+    if (0 != ret)
+    {
+      cerr << "error in writting vlog entry, error is " << ret << endl;
+      return -1;
+    }
+    
+    string readkey, value;
+    string kvstring(p, fixedsize);
+
+    //got keysize/valeusize from kvstring
+    VlogOndiskEntryHeader vheader(0, 0);
+    vheader.decode(kvstring);
+
+    cout << "entry keysize is " << vheader.GetKeySize() << endl;
+    cout << "entry valuesize is " << vheader.GetValueSize() << endl;
+  
+    //the stack may be not enough, so use head allocated memory
+    char *pkey = (char *)malloc(vheader.GetKeySize());
+    ret = vf->Read(pkey, vheader.GetKeySize(), vlogoffset + fixedsize);
+    if (0 != ret)
+    {
+      cerr << "read key failed, error is " << ret << endl;
+      return -1;
+    }
+
+    //string vheaderkey(pkey, vheader.GetKeySize());
+    //cout << "key is " << vheaderkey << endl;
+
+
+    char *pvalue = (char *)malloc(vheader.GetValueSize());
+    ret = vf->Read(pvalue, vheader.GetValueSize(), vlogoffset + fixedsize + vheader.GetKeySize());
+    if (0 != ret)
+    {
+      cerr << "read value failed, error is " << ret << endl;
+      return -1;
+    }
+
+    //string vheadervalue(pvalue, vheader.GetValueSize());
+    delete pkey, pvalue;
+    int64_t nextoffset = vlogoffset + fixedsize + vheader.GetValueSize() + vheader.GetKeySize(); 
+    if (nextoffset < vf->GetTailOffset())
+      return traverseVlog(seq, nextoffset);
+  }
+public:
+  int TraverAllVlogs()
+  {
+    for(auto i:allfiles)  
+    {
+      if (nullptr != i)
+        traverseVlog(i->GetSeq(), 0);
+    }
+  }
 };
 
 class WisckeyDBEnv
@@ -540,6 +611,7 @@ public:
   {
     //create a VlogFileManager
     pvfm = new VlogFileManager(new DBWrapper(kDBPath));
+    assert(nullptr != pvfm);
   }
     
   ~WisckeyDBEnv()
@@ -551,12 +623,13 @@ public:
 
 class DBOperation
 {
-private:
+public:
   WisckeyDBEnv *penv;
 public:
   DBOperation()
   {
     penv = new WisckeyDBEnv();
+    assert(nullptr != penv);
   }
   ~DBOperation()
   {
@@ -579,6 +652,9 @@ public:
 
     //write vlog
     VlogFile *p = penv->pvfm->PickVlogFileToWrite(needwritesize);
+    int64_t originalOffset = p->GetTailOffset();
+
+    cout << "original offset is " << originalOffset << endl;
     int ret = p->Write(vlogstring);
     if (0 != ret)
     {
@@ -587,19 +663,19 @@ public:
     }
 
     //write to rocksdb
-    EntryLocator el(p->GetTailOffset(), needwritesize, currenttime, p->GetSeq());
+    EntryLocator el(originalOffset, needwritesize, currenttime, p->GetSeq());
     
     string elstring;
-    vheader.encode(elstring);
+    el.encode(elstring);
     ret = penv->pvfm->pDb->SyncPut(key, elstring); 
     if (0 != ret)
     {
       //fixme: should convert return code
       return ret;  
     }
-
   }
-  int DB_Get(const string &key, string value)
+
+  int DB_Get(const string &key, string &value)
   {
     string locator;
     int ret = penv->pvfm->pDb->Get(key, locator);
@@ -621,15 +697,22 @@ public:
       return ret;
     }
 
-    //kvsize = sizeof(VlogOndiskEntryHeader) + keysize + sizesize
+    //kvsize = sizeof(VlogOndiskEntryHeader) + keysize + valuesize
     VlogOndiskEntryHeader *vheader = (VlogOndiskEntryHeader *)p;
+  
+    cout << "db keysize is " << vheader->GetKeySize() << endl;
+    cout << "keysize is " << key.size() << endl;
     assert(vheader->GetKeySize() == key.size());
 
     string readkey, readvalue;
     readkey = string(p + sizeof(VlogOndiskEntryHeader), key.size());
-    value = string(p + sizeof(VlogOndiskEntryHeader) + key.size(), value.size());
+    value = string(p + sizeof(VlogOndiskEntryHeader) + key.size(), vheader->GetValueSize());
 
-    assert(readkey == key);
+    if (readkey != key)
+    {
+      cout << "readkey is " << readkey << ", key is " << key << endl;
+      assert(0);
+    }
     return 0;
   }
 };
@@ -1685,24 +1768,41 @@ public:
   TEST(int argc, char **argv)
   {
     processoptions(argc, argv);
+    pop = new DBOperation();  
   }
+
+  void TEST_Traverse()
+  {
+    pop->penv->pvfm->TraverAllVlogs();
+  }
+
   void TEST_readwrite()
   {
-    pop = new DBOperation();  
-    pop->DB_Put("abg", "wuxingyi");
-
-    string value;
-    pop->DB_Get("abg", value);
-    cout << value << endl;
-    delete pop;
+    cout << __func__ << ": STARTED" << endl;
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value(num/1000,'c'); 
+      string key = to_string(num);
+      
+      cout << "before Put: key is " << key << endl;
+      //cout << "before Put: key is " << key << ", value is " <<  value 
+      //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+      pop->DB_Put(key, value);
+      //value.clear();
+      //pop->DB_Get(key, value);
+      //cout << "after  Get: key is " << key << ", value is " << value 
+      //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+      //cout << "---------------------------------------------------" << endl;
+    }
   }
 };
-void TEST_ReadWrite()
-{
-}
+
 int main(int argc, char **argv) 
 {
   TEST test(argc, argv);
   test.TEST_readwrite();
+  test.TEST_Traverse();
   return 0;
 }

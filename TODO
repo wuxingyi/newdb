@@ -28,3 +28,6 @@
 25.make it a daemon, processing put/get requests
 26.control the size of each write batch
 27.how to record compaction status
+28.should we skip if the vlog file is full? we rely on the offset 0 to be a good header.
+   so we cannot write remaining data to the header of a new vlog file.
+29.fix too many open files problem
