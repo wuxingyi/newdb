@@ -127,16 +127,6 @@ public:
     this->keysize = pfixedentry->keysize;
     this->valuesize = pfixedentry->valuesize;
     this->timestamp = pfixedentry->timestamp;
-
-    //if (needstring)
-    //{
-    //  string tempkey(instring.data() + size, keysize);
-    //  string tempvalue(instring.data() + keysize + size, valuesize);
-
-    //  key = tempkey;
-    //  value = tempvalue;
-    //}
-
   }
 };
 
