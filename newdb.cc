@@ -18,6 +18,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <map>
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
@@ -354,6 +355,12 @@ public:
     assert(s.ok());
   }
 
+  //(TODO) add iterators
+  rocksdb::DB *GetDb()
+  {
+    return db;
+  }
+
   ~DBWrapper()
   {
     if (nullptr != db )
@@ -367,6 +374,21 @@ public:
     woptions.sync = false;
   
     rocksdb::Status s = db->Put(woptions, key, value);
+  
+    assert(s.ok());
+    if (s.ok())
+      return 0;
+  
+    return -1;
+  }
+
+  //wrapper of rocksdb::DB::Write
+  int BatchPut(rocksdb::WriteBatch &batch)
+  {
+    rocksdb::WriteOptions woptions;
+    woptions.sync = true;
+  
+    rocksdb::Status s = db->Write(woptions, &batch);
   
     assert(s.ok());
     if (s.ok())
@@ -429,10 +451,12 @@ public:
 struct VlogFileManager
 {
 private:
-  vector<VlogFile *> allfiles; //heap allocated
-  int currentSeq = 0;
-  const string vfmkey = "VlogFileManagerMaxSeq";
-  VlogFile *compactingVf;      //the compacting vlogfile
+  map<int, VlogFile *> allfiles; //heap allocated
+  int currentSeq = 0;            //seq for causual vlog files
+  int availCompactingSeq = 1;            //seq for compacting vlog files
+public:
+  const string vfmWrittingKey = "WISCKEYDB:VlogFileManagerWritingSeq";
+  const string vfmCompactingKey = "WISCKEYDB:VlogFileManagerCompactingSeq";
 
   //we use rocksdb to store vlog manager metadata
   //it contains information about the biggest seq of vlog
@@ -455,7 +479,7 @@ private:
   bool init()
   {
     string seqstring;
-    int ret = pDb->Get(vfmkey, seqstring);  
+    int ret = pDb->Get(vfmWrittingKey, seqstring);  
     if (ret != 0)
     {
       //no key is found, so this is no vlog files
@@ -466,34 +490,20 @@ private:
     {
       currentSeq = atoi(seqstring.c_str());
       cout << "current seq is " << currentSeq << endl;
-      if (0 < currentSeq)
-      {
-        for (int i = 0; i < currentSeq; i++)
-        {
-          //(TODO)This may cause to many open files, must be fixed.
-          if (true == isVlogExist(VlogFile::GetFileNameBySeq(i)))
-          {
-            VlogFile *vf = new VlogFile(i);  
-            allfiles.push_back(vf);
-          }
-          else
-          {
-            allfiles.push_back(nullptr);
-          }
-        }
-      }
+
+      assert(currentSeq % 2 == 0);
     }
 
     //put the VlogFile to vector
     VlogFile *vf = new VlogFile(currentSeq); 
     assert(nullptr != vf);
 
-    allfiles.push_back(vf);
+    allfiles.insert(make_pair(currentSeq, vf));
 
     //put seq 0 to rocksdb
     if (0 == currentSeq)
     {
-      pDb->SyncPut(vfmkey, to_string(currentSeq));
+      pDb->SyncPut(VlogFileManager::vfmWrittingKey, to_string(currentSeq));
     }
   }
 
@@ -503,16 +513,21 @@ public:
   {
     init();
   }
+  bool IsReservedKey(const string &key)
+  {
+    return (key == vfmWrittingKey || key == vfmCompactingKey);
+  }
 
   //whether there is enough space to write
   VlogFile *PickVlogFileToWrite(size_t size)
   {
     if (allfiles[currentSeq]->IsFull(size))
     {
-      ++currentSeq;
+      //original vlogs are allways even numbers
+      currentSeq += 2;
       VlogFile *vf = new VlogFile(currentSeq); 
-      allfiles.push_back(vf);
-      pDb->SyncPut(vfmkey, to_string(currentSeq));
+      allfiles.insert(make_pair(currentSeq, vf));
+      pDb->SyncPut(vfmWrittingKey, to_string(currentSeq));
     }
 
     return allfiles[currentSeq];
@@ -521,7 +536,26 @@ public:
 
   VlogFile *GetVlogFile(int seq)
   {
-    return allfiles[seq];  
+    map<int, VlogFile*>::iterator it = allfiles.find(seq);
+    if (allfiles.end() == it)
+    {
+      //the file is not opened, so we open it if it exists
+      if (true == isVlogExist(VlogFile::GetFileNameBySeq(seq)))
+      {
+        VlogFile *vf = new VlogFile(seq);
+        allfiles.insert(make_pair(seq, vf));
+        return vf;
+      }
+      else
+      {
+        return nullptr;
+      } 
+    }
+    else
+    {
+      //we got it, the file has already opened 
+      return allfiles[seq];  
+    }
   }
 
   int *RemoveVlogFile(int seq)
@@ -532,7 +566,8 @@ public:
       vf->Delete();
 
       //(fixme) make sure this file is no more used by anyone
-      allfiles[seq] = nullptr;
+      //we can just remove it from map
+      allfiles.erase(seq);
       delete vf;
     }
   }
@@ -541,8 +576,8 @@ public:
   {
     for (auto i : allfiles)
     {
-      if (nullptr != i)
-        delete i;
+      delete i.second;
+      allfiles.erase(i.first);
     }
   }
 
@@ -616,10 +651,18 @@ private:
 public:
   int TraverAllVlogs()
   {
-    for(auto i:allfiles)  
+    //maybe not all files are in the map, so we should not use the map to traverse all vlogs
+    //actually we should use file stats
+    for(int i = 0; i <= currentSeq; i++)  
     {
-      if (nullptr != i)
-        traverseVlog(i->GetSeq(), 0);
+      if (isVlogExist(VlogFile::GetFileNameBySeq(i)))
+      {
+        VlogFile *vf = new VlogFile(i);
+        allfiles.insert(make_pair(i, vf));
+        traverseVlog(i, 0);
+        if (i != currentSeq)
+          allfiles.erase(i);
+      }
     }
   }
 
@@ -710,7 +753,7 @@ private:
       }
       else
       {
-        VlogFile *destvf = compactingVf;
+        VlogFile *destvf = allfiles[destseq];
         assert(nullptr != destvf);
 
         //so we should copy the value to compacted Vlog
@@ -755,15 +798,45 @@ private:
   }
 public:
   //(fixme) record the process of compaction
+  //(TODO): add arguments to determine whether need a vlog compaction
   int CompactVlog(int srcseq, int64_t vlogoffset)
   {
+    string sseq;
+    int ret = pDb->Get(vfmCompactingKey, sseq);  
+    if (ret != 0)
+    {
+      //no key is found, so this is no vlog files
+      availCompactingSeq = 1;
+      cout << "compacting seq is " << sseq << endl;
+    }
+    else
+    {
+      availCompactingSeq = atoi(sseq.c_str());
+      cout << "compacting seq is " << availCompactingSeq << endl;
+
+      assert(availCompactingSeq % 2 == 1);
+    }
+
+    //put the VlogFile to vector
+    VlogFile *vf = new VlogFile(availCompactingSeq); 
+    assert(nullptr != vf);
+
+    allfiles.insert(make_pair(availCompactingSeq, vf));
+
+    //put seq 1 to rocksdb
+    if (1 == availCompactingSeq)
+    {
+      pDb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+    }
+
     //we should apply a new VlogFile for compaction
     //maybe we should use a big number seq to avoid seq race condition
-    int seq = 999;
-    compactingVf = new VlogFile(seq);
-    compactToNewVlog(srcseq, seq, 0);
+    compactToNewVlog(srcseq, availCompactingSeq, 0);
 
     //after compaction, the file should be closed
+    //after compaction, update the availCompactingSeq
+    availCompactingSeq += 2;
+    pDb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
   }
 };
 
@@ -803,6 +876,90 @@ public:
       delete penv;
   }
 
+  //(TODO) abandon deleteflags
+  //(TODO) use heap allocated memory to deal with big batches.
+  ////deleteflags is a vector of flags to define whether is a delete operation
+  ////when it's a delete operation, value should always be a null string.
+  int DB_BatchPut(const vector<string> &keys, const vector<string> &values, const vector<bool> &deleteflags)
+  {
+    assert(keys.size() == values.size());
+    assert(keys.size() == deleteflags.size());
+
+    int nums = keys.size();
+    
+    //(fixme): it may be very large
+    string vlogBatchString;
+    string dbBatchString;
+
+    //vector to store db entries writing time
+    vector<timespec> times;
+
+    for (int i = 0; i < nums; i++)
+    {
+      timespec currenttime;
+      clock_gettime(CLOCK_REALTIME, &currenttime);
+      times.push_back(currenttime);
+      
+      //it's unnecessary to write vlog when deletion
+      if (true == deleteflags[i]) 
+      {
+        continue;
+      }
+
+      //encode the vlog string
+      //each entry should have his own timespec
+      VlogOndiskEntryHeader vheader(keys[i].size(), values[i].size(), currenttime);
+      string vlogstring;
+
+      //what we need to write is vheader + key[i] + value[i]
+      vheader.encode(vlogstring);
+      vlogBatchString += vlogstring + keys[i] + values[i];
+    }
+
+    //write vlog
+    VlogFile *p = penv->pvfm->PickVlogFileToWrite(vlogBatchString.size());
+    int64_t originalOffset = p->GetTailOffset();
+
+    cout << "original offset is " << originalOffset << endl;
+    int ret = p->Write(vlogBatchString);
+    if (0 != ret)
+    {
+      //fixme: should convert return code
+      return ret;  
+    }
+
+    //write to rocksdb
+    rocksdb::WriteBatch wbatch;
+    int64_t currentoffset = originalOffset;
+    int fixedsize = sizeof(VlogOndiskEntryHeader);
+    for (int i = 0; i < nums; i++)
+    {
+      if (deleteflags[i] == true)
+      {
+        wbatch.Delete(keys[i]);
+      }
+      else
+      {
+        string EntryLocatorString;
+        EntryLocator el(currentoffset, fixedsize + keys[i].size() + values[i].size(), times[i], p->GetSeq());
+        el.encode(EntryLocatorString);
+        wbatch.Put(keys[i], EntryLocatorString);
+        currentoffset += fixedsize + keys[i].size() + values[i].size();
+      }
+    }
+
+    ret = penv->pvfm->pDb->BatchPut(wbatch); 
+    if (0 != ret)
+    {
+      //fixme: should convert return code
+      return ret;  
+    }
+  }
+
+  //we first write encoded value to vlog, then to rocksdb.
+  //note that we write to vlog with O_SYNC flag, so vlog entry 
+  //can be used as a journal for us to recover the iterm which 
+  //has not been written to rocksdb yet.
   int DB_Put(const string &key, const string &value)
   {
     timespec currenttime;
@@ -843,6 +1000,10 @@ public:
 
   int DB_Get(const string &key, string &value)
   {
+    //wisckeydb reserved keys
+    if (penv->pvfm->IsReservedKey(key))
+      return -1;
+
     string locator;
     int ret = penv->pvfm->pDb->Get(key, locator);
     if (0 != ret)
@@ -853,6 +1014,8 @@ public:
     EntryLocator el(0, 0);
     el.decode(locator);
     VlogFile *vf = penv->pvfm->GetVlogFile(el.GetVlogSeq());
+
+    assert(nullptr != vf);
     
     int kvsize = el.GetLength();
 
@@ -866,8 +1029,8 @@ public:
     //kvsize = sizeof(VlogOndiskEntryHeader) + keysize + valuesize
     VlogOndiskEntryHeader *vheader = (VlogOndiskEntryHeader *)p;
   
-    cout << "db keysize is " << vheader->GetKeySize() << endl;
-    cout << "keysize is " << key.size() << endl;
+    //cout << "db keysize is " << vheader->GetKeySize() << endl;
+    //cout << "keysize is " << key.size() << endl;
     assert(vheader->GetKeySize() == key.size());
 
     string readkey, readvalue;
@@ -880,6 +1043,78 @@ public:
       assert(0);
     }
     return 0;
+  }
+
+  //implement range query which is not parallel
+  void DB_QueryAll()
+  {
+    cout << __func__ << endl;
+    rocksdb::Iterator* it = penv->pvfm->pDb->GetDb()->NewIterator(rocksdb::ReadOptions());
+  
+    string value;
+    //note that rocksdb is also used by wisckeydb to store vlog file metadata,
+    //and the metadta key doesnot has a vlog entry.
+    for (it->SeekToFirst(); it->Valid(); it->Next()) 
+    {
+      int ret = DB_Get(string(it->key().data(), it->key().size()), value);  
+      if (0 == ret)
+      {
+        cout << "key is " << it->key().data() << endl;
+        cout << "value is " << value << endl;
+      }
+    }
+  
+    assert(it->status().ok()); // Check for any errors found during the scan
+    delete it;
+  }
+
+  //implement parallel range query
+  //(TODO)should use output paras, not cout
+  void DB_ParallelQuery()
+  {
+    rocksdb::Iterator* it = penv->pvfm->pDb->GetDb()->NewIterator(rocksdb::ReadOptions());
+  
+    //TODO(wuxingyi): use workqueue here
+    std::vector<std::thread> workers;
+    for (it->SeekToFirst(); it->Valid(); it->Next()) 
+    {
+      string value;
+      //(fixme)use static function here
+      //workers.push_back(std::thread(DB_, it->key().ToString(), value));
+    }
+    
+    for (auto& worker : workers) 
+    {
+      worker.join();
+    }
+  
+    assert(it->status().ok()); // Check for any errors found during the scan
+    delete it;
+  }
+
+  //query from key, at most limit entries
+  void DB_QueryRange(const string &key, int limit)
+  {
+    cout << __func__ << endl;
+    rocksdb::Iterator* it = penv->pvfm->pDb->GetDb()->NewIterator(rocksdb::ReadOptions());
+  
+    string value;
+    int queriedKeys = 0;
+    //note that rocksdb is also used by wisckeydb to store vlog file metadata,
+    //and the metadta key doesnot has a vlog entry.
+    for (it->Seek(key); it->Valid() && queriedKeys < limit; it->Next()) 
+    {
+      int ret = DB_Get(string(it->key().data(), it->key().size()), value);  
+      if (0 == ret)
+      {
+        cout << "key is " << it->key().data() << endl;
+        cout << "value is " << value << endl;
+      }
+      ++queriedKeys;
+    }
+  
+    assert(it->status().ok()); // Check for any errors found during the scan
+    delete it;
   }
 };
 
@@ -1931,14 +2166,69 @@ public:
     pop = new DBOperation();  
   }
 
+private:
+void TEST_Batch()
+{
+  cout << __func__ << ": STARTED" << endl;
+
+  vector<string> keys;
+  vector<string> values;
+  vector<bool> deleteflags;
+
+  for (int i = 0; i < testkeys; i++)
+  {
+	string randkey = to_string(rand());
+	string randvalue = string(rand()/10000000, 'c');
+    keys.push_back(randkey);
+    values.push_back(randvalue);
+    deleteflags.push_back(false);
+  }
+  
+  //update half of them
+  for (int i = 0; i < testkeys; i++)
+  {
+    if (i % 2 == 0)
+    {
+      keys.push_back(keys[i]);
+      values.push_back("wuxingyi");
+      deleteflags.push_back(false);
+    }
+  }
+
+  //delete half of them
+  for (int i = 0; i < testkeys; i++)
+  {
+    if (i % 2 == 1)
+    {
+      keys.push_back(keys[i]);
+      values.push_back("");
+      deleteflags.push_back(true);
+    }
+  }
+
+  pop->DB_BatchPut(keys, values, deleteflags);
+}
   void TEST_Traverse()
   {
+    cout << __func__ << ": STARTED" << endl;
     pop->penv->pvfm->TraverAllVlogs();
+    cout << __func__ << ": FINISHED" << endl;
   }
 
   void TEST_Compact()
   {
     pop->penv->pvfm->CompactVlog(0, 0);
+  }
+
+  void TEST_QueryAll()
+  {
+    pop->DB_QueryAll();
+  }
+
+  //query from key, at most limit entries
+  void TEST_QueryRange(const string &key, int limit)
+  {
+    pop->DB_QueryRange(key, limit);
   }
 
   void TEST_readwrite()
@@ -1948,27 +2238,33 @@ public:
     {
       cout << "this is the " << i <<"th" << endl;
       int num = rand();
-      string value(num/1000,'c'); 
+      string value(num/1000000,'c'); 
       string key = to_string(num);
       
-      cout << "before Put: key is " << key << endl;
+      //cout << "before Put: key is " << key << endl;
       //cout << "before Put: key is " << key << ", value is " <<  value 
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
       pop->DB_Put(key, value);
-      //value.clear();
-      //pop->DB_Get(key, value);
+      value.clear();
+      pop->DB_Get(key, value);
       //cout << "after  Get: key is " << key << ", value is " << value 
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
-      //cout << "---------------------------------------------------" << endl;
+      cout << "---------------------------------------------------" << endl;
     }
+    cout << __func__ << ": FINISHED" << endl;
+  }
+public:
+  void run()
+  {
+    TEST_readwrite();
+    //TEST_QueryAll();
+    TEST_QueryRange("66", 2);
   }
 };
 
 int main(int argc, char **argv) 
 {
   TEST test(argc, argv);
-  test.TEST_readwrite();
-  test.TEST_Traverse();
-  test.TEST_Compact();
+  test.run();
   return 0;
 }
