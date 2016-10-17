@@ -337,6 +337,7 @@ private:
   rocksdb::DB* db = nullptr;
 
 public:
+  typedef rocksdb::Iterator Iterator;
   DBWrapper(const string &path):dbPath(path)
   {
     int ret = mkdir(dbPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
@@ -355,10 +356,9 @@ public:
     assert(s.ok());
   }
 
-  //(TODO) add iterators
-  rocksdb::DB *GetDb()
+  Iterator *NewIterator()
   {
-    return db;
+    return db->NewIterator(rocksdb::ReadOptions());
   }
 
   ~DBWrapper()
@@ -1049,7 +1049,7 @@ public:
   void DB_QueryAll()
   {
     cout << __func__ << endl;
-    rocksdb::Iterator* it = penv->pvfm->pDb->GetDb()->NewIterator(rocksdb::ReadOptions());
+    DBWrapper::Iterator* it = penv->pvfm->pDb->NewIterator();
   
     string value;
     //note that rocksdb is also used by wisckeydb to store vlog file metadata,
@@ -1072,7 +1072,7 @@ public:
   //(TODO)should use output paras, not cout
   void DB_ParallelQuery()
   {
-    rocksdb::Iterator* it = penv->pvfm->pDb->GetDb()->NewIterator(rocksdb::ReadOptions());
+    rocksdb::Iterator* it = penv->pvfm->pDb->NewIterator();
   
     //TODO(wuxingyi): use workqueue here
     std::vector<std::thread> workers;
@@ -1096,7 +1096,7 @@ public:
   void DB_QueryRange(const string &key, int limit)
   {
     cout << __func__ << endl;
-    rocksdb::Iterator* it = penv->pvfm->pDb->GetDb()->NewIterator(rocksdb::ReadOptions());
+    rocksdb::Iterator* it = penv->pvfm->pDb->NewIterator();
   
     string value;
     int queriedKeys = 0;
