@@ -127,16 +127,6 @@ public:
     this->keysize = pfixedentry->keysize;
     this->valuesize = pfixedentry->valuesize;
     this->timestamp = pfixedentry->timestamp;
-
-    //if (needstring)
-    //{
-    //  string tempkey(instring.data() + size, keysize);
-    //  string tempvalue(instring.data() + keysize + size, valuesize);
-
-    //  key = tempkey;
-    //  value = tempvalue;
-    //}
-
   }
 };
 
@@ -1193,47 +1183,49 @@ public:
   }
 
 private:
-void TEST_Batch()
-{
-  cout << __func__ << ": STARTED" << endl;
-
-  vector<string> keys;
-  vector<string> values;
-  vector<bool> deleteflags;
-
-  for (int i = 0; i < testkeys; i++)
+  void TEST_Batch()
   {
-	string randkey = to_string(rand());
-	string randvalue = string(rand()/10000000, 'c');
-    keys.push_back(randkey);
-    values.push_back(randvalue);
-    deleteflags.push_back(false);
-  }
+    cout << __func__ << ": STARTED" << endl;
   
-  //update half of them
-  for (int i = 0; i < testkeys; i++)
-  {
-    if (i % 2 == 0)
+    vector<string> keys;
+    vector<string> values;
+    vector<bool> deleteflags;
+  
+    for (int i = 0; i < testkeys; i++)
     {
-      keys.push_back(keys[i]);
-      values.push_back("wuxingyi");
+  	string randkey = to_string(rand());
+  	string randvalue = string(rand()/10000000, 'c');
+      keys.push_back(randkey);
+      values.push_back(randvalue);
       deleteflags.push_back(false);
     }
-  }
-
-  //delete half of them
-  for (int i = 0; i < testkeys; i++)
-  {
-    if (i % 2 == 1)
+    
+    //update half of them
+    for (int i = 0; i < testkeys; i++)
     {
-      keys.push_back(keys[i]);
-      values.push_back("");
-      deleteflags.push_back(true);
+      if (i % 2 == 0)
+      {
+        keys.push_back(keys[i]);
+        values.push_back("wuxingyi");
+        deleteflags.push_back(false);
+      }
     }
+  
+    //delete half of them
+    for (int i = 0; i < testkeys; i++)
+    {
+      if (i % 2 == 1)
+      {
+        keys.push_back(keys[i]);
+        values.push_back("");
+        deleteflags.push_back(true);
+      }
+    }
+  
+    pop->DB_BatchPut(keys, values, deleteflags);
+    cout << __func__ << ": FINISHED" << endl;
   }
 
-  pop->DB_BatchPut(keys, values, deleteflags);
-}
   void TEST_Traverse()
   {
     cout << __func__ << ": STARTED" << endl;
