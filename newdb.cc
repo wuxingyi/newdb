@@ -59,6 +59,12 @@ static int compactedVlogFileSize = 0;
 static int traversedKey = 0;
 static int64_t compactTailOffset = 0;
 
+
+class VlogFileManager;
+//VlogFileManager is singleton, only one instance
+//only used by the write/read thread
+static VlogFileManager *pvfm = nullptr;
+
 int createFd(string path);
 
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
@@ -566,6 +572,7 @@ private:
 public:
   RocksDBWrapper *GetDbHandler()
   {
+    assert(nullptr != pDb);
     return pDb;
   }
 
@@ -901,51 +908,10 @@ public:
   }
 };
 
-class WisckeyDBEnv
-{
-private:
-  VlogFileManager *pvfm;
-public:
-  VlogFileManager *GetVFM()
-  {
-    return pvfm;
-  }
-
-  WisckeyDBEnv()
-  {
-    //create a VlogFileManager
-    pvfm = new VlogFileManager(new RocksDBWrapper(kDBPath));
-    assert(nullptr != pvfm);
-  }
-    
-  ~WisckeyDBEnv()
-  {
-    if (nullptr != pvfm)  
-      delete pvfm;
-  }
-};
-
-////WisckeyDBEnv is singleton, only one instance
-//static WisckeyDBEnv penv;
-
 //interface to deal with user requests
 class DBOperation
 {
 public:
-  WisckeyDBEnv *penv;
-public:
-  DBOperation()
-  {
-    penv = new WisckeyDBEnv();
-    assert(nullptr != penv);
-  }
-
-  ~DBOperation()
-  {
-    if (nullptr != penv)
-      delete penv;
-  }
-
   //(TODO) abandon deleteflags
   //(TODO) use heap allocated memory to deal with big batches.
   ////deleteflags is a vector of flags to define whether is a delete operation
@@ -987,7 +953,7 @@ public:
     }
 
     //write vlog
-    VlogFile *p = penv->GetVFM()->PickVlogFileToWrite(vlogBatchString.size());
+    VlogFile *p = pvfm->PickVlogFileToWrite(vlogBatchString.size());
     int64_t originalOffset = p->GetTailOffset();
 
     cout << "original offset is " << originalOffset << endl;
@@ -1018,7 +984,7 @@ public:
       }
     }
 
-    ret = penv->GetVFM()->GetDbHandler()->BatchPut(wbatch); 
+    ret = pvfm->GetDbHandler()->BatchPut(wbatch); 
     if (0 != ret)
     {
       //fixme: should convert return code
@@ -1044,7 +1010,7 @@ public:
     int64_t needwritesize = sizeof(vheader) + key.size() + value.size();
 
     //write vlog
-    VlogFile *p = penv->GetVFM()->PickVlogFileToWrite(needwritesize);
+    VlogFile *p = pvfm->PickVlogFileToWrite(needwritesize);
     int64_t originalOffset = p->GetTailOffset();
 
     cout << "original offset is " << originalOffset << endl;
@@ -1060,7 +1026,7 @@ public:
     
     string elstring;
     el.encode(elstring);
-    ret = penv->GetVFM()->GetDbHandler()->SyncPut(key, elstring); 
+    ret = pvfm->GetDbHandler()->SyncPut(key, elstring); 
     if (0 != ret)
     {
       //fixme: should convert return code
@@ -1073,11 +1039,11 @@ public:
   {
     //wisckeydb reserved keys
     //wisckeydb will NEVER call this function, it directly call Get
-    if (penv->GetVFM()->IsReservedKey(key))
+    if (pvfm->IsReservedKey(key))
       return -1;
 
     string locator;
-    int ret = penv->GetVFM()->GetDbHandler()->Get(key, locator);
+    int ret = pvfm->GetDbHandler()->Get(key, locator);
     if (0 != ret)
       return ret;
 
@@ -1085,7 +1051,7 @@ public:
     timespec time;
     EntryLocator el(0, 0);
     el.decode(locator);
-    VlogFile *vf = penv->GetVFM()->GetVlogFile(el.GetVlogSeq());
+    VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
 
     assert(nullptr != vf);
     
@@ -1121,7 +1087,7 @@ public:
   void DB_QueryAll()
   {
     cout << __func__ << endl;
-    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
+    Iterator* it = pvfm->GetDbHandler()->NewIterator();
   
     string value;
     //note that rocksdb is also used by wisckeydb to store vlog file metadata,
@@ -1144,7 +1110,7 @@ public:
   //(TODO)should use output paras, not cout
   void DB_ParallelQuery()
   {
-    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
+    Iterator* it = pvfm->GetDbHandler()->NewIterator();
   
     //TODO(wuxingyi): use workqueue here
     std::vector<std::thread> workers;
@@ -1169,7 +1135,7 @@ public:
   void DB_QueryFrom(const string &key)
   {
     cout << __func__ << endl;
-    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
+    Iterator* it = pvfm->GetDbHandler()->NewIterator();
   
     string value;
     //note that rocksdb is also used by wisckeydb to store vlog file metadata,
@@ -1190,7 +1156,7 @@ public:
 
   Iterator *DB_GetIterator()
   {
-    return penv->GetVFM()->GetDbHandler()->NewIterator();
+    return pvfm->GetDbHandler()->NewIterator();
   }
 
   //query from key, at most limit entries
@@ -1198,7 +1164,7 @@ public:
   void DB_QueryRange(const string &key, int limit)
   {
     cout << __func__ << endl;
-    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
+    Iterator* it = pvfm->GetDbHandler()->NewIterator();
   
     string value;
     int queriedKeys = 0;
@@ -1341,13 +1307,13 @@ private:
   void TEST_Traverse()
   {
     cout << __func__ << ": STARTED" << endl;
-    pop->penv->GetVFM()->TraverAllVlogs();
+    pvfm->TraverAllVlogs();
     cout << __func__ << ": FINISHED" << endl;
   }
 
   void TEST_Compact()
   {
-    pop->penv->GetVFM()->CompactVlog(0, 0);
+    pvfm->CompactVlog(0, 0);
   }
 
   void TEST_QueryAll()
@@ -1414,15 +1380,22 @@ public:
   {
     TEST_readwrite();
     TEST_Iterator();
-    //TEST_readwrite();
-    //TEST_QueryAll();
-    //TEST_QueryRange("66", 2);
-    //TEST_QueryFrom("66");
+    TEST_readwrite();
+    TEST_QueryAll();
+    TEST_QueryRange("66", 2);
+    TEST_QueryFrom("66");
   }
 };
 
+void EnvSetup()
+{
+  //pvfm is globally visible
+  pvfm = new VlogFileManager((new RocksDBWrapper(kDBPath)));
+}
+
 int main(int argc, char **argv) 
 {
+  EnvSetup();
   TEST test(argc, argv);
   test.run();
   return 0;
