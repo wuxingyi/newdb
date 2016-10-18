@@ -909,7 +909,9 @@ public:
 };
 
 //interface to deal with user requests
-class DBOperation
+//doesnot need to provide any data, only provide methods
+//a DBOperations object can execute multiple operations as you wish
+class DBOperations
 {
 public:
   //(TODO) abandon deleteflags
@@ -1225,7 +1227,6 @@ inline std::ostream& operator<<(std::ostream& out, const timespec& t)
 class TEST
 {
 private:
-  DBOperation *pop;
   int processoptions(int argc, char **argv)
   {
     using namespace boost::program_options;
@@ -1257,7 +1258,6 @@ public:
   TEST(int argc, char **argv)
   {
     processoptions(argc, argv);
-    pop = new DBOperation();  
   }
 
 private:
@@ -1300,7 +1300,8 @@ private:
       }
     }
   
-    pop->DB_BatchPut(keys, values, deleteflags);
+    DBOperations op;
+    op.DB_BatchPut(keys, values, deleteflags);
     cout << __func__ << ": FINISHED" << endl;
   }
 
@@ -1318,23 +1319,27 @@ private:
 
   void TEST_QueryAll()
   {
-    pop->DB_QueryAll();
+    DBOperations op;
+    op.DB_QueryAll();
   }
 
   //query from key, at most limit entries
   void TEST_QueryRange(const string &key, int limit)
   {
-    pop->DB_QueryRange(key, limit);
+    DBOperations op;
+    op.DB_QueryRange(key, limit);
   }
 
   //query from key
   void TEST_QueryFrom(const string &key)
   {
-    pop->DB_QueryFrom(key);
+    DBOperations op;
+    op.DB_QueryFrom(key);
   }
 
   void TEST_readwrite()
   {
+    DBOperations op;
     cout << __func__ << ": STARTED" << endl;
     for(int i = 0; i < testkeys; i++)
     {
@@ -1346,9 +1351,9 @@ private:
       //cout << "before Put: key is " << key << endl;
       //cout << "before Put: key is " << key << ", value is " <<  value 
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
-      pop->DB_Put(key, value);
+      op.DB_Put(key, value);
       value.clear();
-      pop->DB_Get(key, value);
+      op.DB_Get(key, value);
       //cout << "after  Get: key is " << key << ", value is " << value 
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
       cout << "---------------------------------------------------" << endl;
@@ -1358,13 +1363,14 @@ private:
 
   void TEST_Iterator()
   {
+    DBOperations op;
     cout << __func__ << ": STARTED" << endl;
-    Iterator *it = pop->DB_GetIterator();
+    Iterator *it = op.DB_GetIterator();
     cout << it->Valid() << endl;
     it->SeekToFirst();
   
     string value;
-    int ret = pop->DB_Get(string(it->key().data(), it->key().size()), value);  
+    int ret = op.DB_Get(string(it->key().data(), it->key().size()), value);  
     if (0 == ret)
     {
       cout << "key is " << it->key().data() << endl;
