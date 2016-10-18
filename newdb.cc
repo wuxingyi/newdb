@@ -179,6 +179,7 @@ public:
     return offset;
   }
 };
+
 struct VlogFile
 {
 private:
@@ -320,15 +321,82 @@ public:
   }
 };
 
-class DBWrapper
+class Iterator
+{
+private:
+  rocksdb::Iterator *dbiter = nullptr;
+public:
+  Iterator(rocksdb::Iterator *it):dbiter(it){}
+  ~Iterator()
+  {
+    assert(nullptr != dbiter);
+    delete dbiter;
+  }
+
+  bool Valid()
+  {
+    return dbiter->Valid();
+  }
+
+  string key()
+  {
+    if(Valid())
+      return string(dbiter->key().data(), dbiter->key().size());
+  }
+
+  string value()
+  {
+    if(Valid())
+      return string(dbiter->value().data(), dbiter->value().size());
+  }
+
+  int Next()
+  {
+    if(Valid())
+      dbiter->Next();
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int Prev()
+  {
+    if(Valid())
+      dbiter->Prev();
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int SeekToFirst()
+  {
+    dbiter->SeekToFirst();  
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int SeekToFirst(const string &prefix)
+  {
+    rocksdb::Slice slice_prefix(prefix);
+    dbiter->Seek(slice_prefix);  
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int Seek(const string &prefix)
+  {
+    rocksdb::Slice slice_prefix(prefix);
+    dbiter->Seek(slice_prefix);  
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int status()
+  {
+    return dbiter->status().ok() ? 0 : -1;
+  }
+};
+
+class RocksDBWrapper
 {
 private:
   string dbPath;
   rocksdb::DB* db = nullptr;
-
 public:
-  typedef rocksdb::Iterator Iterator;
-  DBWrapper(const string &path):dbPath(path)
+  RocksDBWrapper(const string &path):dbPath(path)
   {
     int ret = mkdir(dbPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 
@@ -348,10 +416,10 @@ public:
 
   Iterator *NewIterator()
   {
-    return db->NewIterator(rocksdb::ReadOptions());
+    return new Iterator(db->NewIterator(rocksdb::ReadOptions()));
   }
 
-  ~DBWrapper()
+  ~RocksDBWrapper()
   {
     if (nullptr != db )
       delete db;
@@ -450,11 +518,9 @@ public:
 
   //we use rocksdb to store vlog manager metadata
   //it contains information about the biggest seq of vlog
-public:
-  //fixme: set it to private
-  DBWrapper *pDb;
-  
 private:
+  RocksDBWrapper *pDb;
+  
   //whether a vlog file with @filename exists
   bool isVlogExist(string filename)
   {
@@ -498,8 +564,13 @@ private:
   }
 
 public:
+  RocksDBWrapper *GetDbHandler()
+  {
+    return pDb;
+  }
+
   //make sure rocksdb db instance has been initiated
-  VlogFileManager(DBWrapper *pDb_):pDb(pDb_)
+  VlogFileManager(RocksDBWrapper *pDb_):pDb(pDb_)
   {
     init();
   }
@@ -712,7 +783,7 @@ private:
 
     //we query rocksdb with keystring 
     string locator;
-    ret = pDb->Get(vheaderkey, locator);
+    ret = GetDbHandler()->Get(vheaderkey, locator);
     if (0 != ret)
     {
       //it's already deleted,so the space must be freed. 
@@ -767,7 +838,7 @@ private:
         EntryLocator dblocator(destvf->GetTailOffset(), length, dblocator.GetTimeStamp(), destseq);
         dblocator.encode(EntryLocatorString);
 
-        ret = pDb->Put(vheaderkey, EntryLocatorString);
+        ret = GetDbHandler()->Put(vheaderkey, EntryLocatorString);
         assert(0 == ret);
 
         //advance the copacted vlog tail
@@ -792,7 +863,7 @@ public:
   int CompactVlog(int srcseq, int64_t vlogoffset)
   {
     string sseq;
-    int ret = pDb->Get(vfmCompactingKey, sseq);  
+    int ret = GetDbHandler()->Get(vfmCompactingKey, sseq);  
     if (ret != 0)
     {
       //no key is found, so this is no vlog files
@@ -816,7 +887,7 @@ public:
     //put seq 1 to rocksdb
     if (1 == availCompactingSeq)
     {
-      pDb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+      GetDbHandler()->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
     }
 
     //we should apply a new VlogFile for compaction
@@ -826,20 +897,24 @@ public:
     //after compaction, the file should be closed
     //after compaction, update the availCompactingSeq
     availCompactingSeq += 2;
-    pDb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+    GetDbHandler()->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
   }
 };
 
 class WisckeyDBEnv
 {
-//fixme: set it to public now
-public:
+private:
   VlogFileManager *pvfm;
 public:
+  VlogFileManager *GetVFM()
+  {
+    return pvfm;
+  }
+
   WisckeyDBEnv()
   {
     //create a VlogFileManager
-    pvfm = new VlogFileManager(new DBWrapper(kDBPath));
+    pvfm = new VlogFileManager(new RocksDBWrapper(kDBPath));
     assert(nullptr != pvfm);
   }
     
@@ -850,6 +925,10 @@ public:
   }
 };
 
+////WisckeyDBEnv is singleton, only one instance
+//static WisckeyDBEnv penv;
+
+//interface to deal with user requests
 class DBOperation
 {
 public:
@@ -860,6 +939,7 @@ public:
     penv = new WisckeyDBEnv();
     assert(nullptr != penv);
   }
+
   ~DBOperation()
   {
     if (nullptr != penv)
@@ -907,7 +987,7 @@ public:
     }
 
     //write vlog
-    VlogFile *p = penv->pvfm->PickVlogFileToWrite(vlogBatchString.size());
+    VlogFile *p = penv->GetVFM()->PickVlogFileToWrite(vlogBatchString.size());
     int64_t originalOffset = p->GetTailOffset();
 
     cout << "original offset is " << originalOffset << endl;
@@ -938,7 +1018,7 @@ public:
       }
     }
 
-    ret = penv->pvfm->pDb->BatchPut(wbatch); 
+    ret = penv->GetVFM()->GetDbHandler()->BatchPut(wbatch); 
     if (0 != ret)
     {
       //fixme: should convert return code
@@ -964,7 +1044,7 @@ public:
     int64_t needwritesize = sizeof(vheader) + key.size() + value.size();
 
     //write vlog
-    VlogFile *p = penv->pvfm->PickVlogFileToWrite(needwritesize);
+    VlogFile *p = penv->GetVFM()->PickVlogFileToWrite(needwritesize);
     int64_t originalOffset = p->GetTailOffset();
 
     cout << "original offset is " << originalOffset << endl;
@@ -980,7 +1060,7 @@ public:
     
     string elstring;
     el.encode(elstring);
-    ret = penv->pvfm->pDb->SyncPut(key, elstring); 
+    ret = penv->GetVFM()->GetDbHandler()->SyncPut(key, elstring); 
     if (0 != ret)
     {
       //fixme: should convert return code
@@ -988,14 +1068,16 @@ public:
     }
   }
 
+  //retrive @value by @key, if exists, the @value will be read from vlog
   int DB_Get(const string &key, string &value)
   {
     //wisckeydb reserved keys
-    if (penv->pvfm->IsReservedKey(key))
+    //wisckeydb will NEVER call this function, it directly call Get
+    if (penv->GetVFM()->IsReservedKey(key))
       return -1;
 
     string locator;
-    int ret = penv->pvfm->pDb->Get(key, locator);
+    int ret = penv->GetVFM()->GetDbHandler()->Get(key, locator);
     if (0 != ret)
       return ret;
 
@@ -1003,7 +1085,7 @@ public:
     timespec time;
     EntryLocator el(0, 0);
     el.decode(locator);
-    VlogFile *vf = penv->pvfm->GetVlogFile(el.GetVlogSeq());
+    VlogFile *vf = penv->GetVFM()->GetVlogFile(el.GetVlogSeq());
 
     assert(nullptr != vf);
     
@@ -1039,7 +1121,7 @@ public:
   void DB_QueryAll()
   {
     cout << __func__ << endl;
-    DBWrapper::Iterator* it = penv->pvfm->pDb->NewIterator();
+    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
   
     string value;
     //note that rocksdb is also used by wisckeydb to store vlog file metadata,
@@ -1054,7 +1136,7 @@ public:
       }
     }
   
-    assert(it->status().ok()); // Check for any errors found during the scan
+    assert(it->status() == 0); // Check for any errors found during the scan
     delete it;
   }
 
@@ -1062,7 +1144,7 @@ public:
   //(TODO)should use output paras, not cout
   void DB_ParallelQuery()
   {
-    rocksdb::Iterator* it = penv->pvfm->pDb->NewIterator();
+    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
   
     //TODO(wuxingyi): use workqueue here
     std::vector<std::thread> workers;
@@ -1078,15 +1160,45 @@ public:
       worker.join();
     }
   
-    assert(it->status().ok()); // Check for any errors found during the scan
+    assert(it->status() == 0); // Check for any errors found during the scan
     delete it;
   }
 
+  //query from @key 
+  //we implement readahead here to accelarate vlog reading
+  void DB_QueryFrom(const string &key)
+  {
+    cout << __func__ << endl;
+    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
+  
+    string value;
+    //note that rocksdb is also used by wisckeydb to store vlog file metadata,
+    //and the metadta key doesnot has a vlog entry.
+    for (it->Seek(key); it->Valid(); it->Next()) 
+    {
+      int ret = DB_Get(string(it->key().data(), it->key().size()), value);  
+      if (0 == ret)
+      {
+        cout << "key is " << it->key().data() << endl;
+        //cout << "value is " << value << endl;
+      }
+    }
+  
+    assert(it->status() == 0); // Check for any errors found during the scan
+    delete it;
+  }
+
+  Iterator *DB_GetIterator()
+  {
+    return penv->GetVFM()->GetDbHandler()->NewIterator();
+  }
+
   //query from key, at most limit entries
+  //note: this interface is not for users, plz use DB_QueryFrom
   void DB_QueryRange(const string &key, int limit)
   {
     cout << __func__ << endl;
-    rocksdb::Iterator* it = penv->pvfm->pDb->NewIterator();
+    Iterator* it = penv->GetVFM()->GetDbHandler()->NewIterator();
   
     string value;
     int queriedKeys = 0;
@@ -1103,7 +1215,7 @@ public:
       ++queriedKeys;
     }
   
-    assert(it->status().ok()); // Check for any errors found during the scan
+    assert(it->status() == 0); // Check for any errors found during the scan
     delete it;
   }
 };
@@ -1229,13 +1341,13 @@ private:
   void TEST_Traverse()
   {
     cout << __func__ << ": STARTED" << endl;
-    pop->penv->pvfm->TraverAllVlogs();
+    pop->penv->GetVFM()->TraverAllVlogs();
     cout << __func__ << ": FINISHED" << endl;
   }
 
   void TEST_Compact()
   {
-    pop->penv->pvfm->CompactVlog(0, 0);
+    pop->penv->GetVFM()->CompactVlog(0, 0);
   }
 
   void TEST_QueryAll()
@@ -1247,6 +1359,12 @@ private:
   void TEST_QueryRange(const string &key, int limit)
   {
     pop->DB_QueryRange(key, limit);
+  }
+
+  //query from key
+  void TEST_QueryFrom(const string &key)
+  {
+    pop->DB_QueryFrom(key);
   }
 
   void TEST_readwrite()
@@ -1271,12 +1389,35 @@ private:
     }
     cout << __func__ << ": FINISHED" << endl;
   }
+
+  void TEST_Iterator()
+  {
+    cout << __func__ << ": STARTED" << endl;
+    Iterator *it = pop->DB_GetIterator();
+    cout << it->Valid() << endl;
+    it->SeekToFirst();
+  
+    string value;
+    int ret = pop->DB_Get(string(it->key().data(), it->key().size()), value);  
+    if (0 == ret)
+    {
+      cout << "key is " << it->key().data() << endl;
+      cout << "value is " << value << endl;
+    }
+
+    delete it;
+    cout << __func__ << ": FINISHED" << endl;
+  }
+
 public:
   void run()
   {
     TEST_readwrite();
+    TEST_Iterator();
+    //TEST_readwrite();
     //TEST_QueryAll();
-    TEST_QueryRange("66", 2);
+    //TEST_QueryRange("66", 2);
+    //TEST_QueryFrom("66");
   }
 };
 
