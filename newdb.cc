@@ -1088,10 +1088,10 @@ public:
   //implement range query which is not parallel
   void DB_QueryAll()
   {
-    cout << __func__ << endl;
     Iterator* it = pvfm->GetDbHandler()->NewIterator();
   
     string value;
+    int gotkeys = 0;
     //note that rocksdb is also used by wisckeydb to store vlog file metadata,
     //and the metadta key doesnot has a vlog entry.
     for (it->SeekToFirst(); it->Valid(); it->Next()) 
@@ -1101,9 +1101,13 @@ public:
       {
         cout << "key is " << it->key().data() << endl;
         cout << "value is " << value << endl;
+
+        //reserved keys are not count
+        ++gotkeys;
       }
     }
   
+    cout << __func__ << " we got "  << gotkeys <<endl;
     assert(it->status() == 0); // Check for any errors found during the scan
     delete it;
   }
@@ -1370,14 +1374,23 @@ private:
     it->SeekToFirst();
   
     string value;
-    int ret = op.DB_Get(string(it->key().data(), it->key().size()), value);  
-    if (0 == ret)
+    int gotkeys = 0;
+    while(it->Valid())
     {
-      cout << "key is " << it->key().data() << endl;
-      cout << "value is " << value << endl;
+      int ret = op.DB_Get(string(it->key().data(), it->key().size()), value);  
+      if (0 == ret)
+      {
+        cout << "key is " << it->key().data() << endl;
+        cout << "value is " << value << endl;
+        
+        //reserved keys are not count
+        ++gotkeys;
+      }
+      it->Next();
     }
 
     delete it;
+    cout << __func__ << " we got "  << gotkeys <<endl;
     cout << __func__ << ": FINISHED" << endl;
   }
 
@@ -1386,7 +1399,6 @@ public:
   {
     TEST_readwrite();
     TEST_Iterator();
-    TEST_readwrite();
     TEST_QueryAll();
     TEST_QueryRange("66", 2);
     TEST_QueryFrom("66");
