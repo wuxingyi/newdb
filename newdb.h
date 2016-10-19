@@ -60,7 +60,7 @@ public:
   //has not been written to rocksdb yet.
   int DB_Put(const string &key, const string &value);
 
-private:
+protected:
   //reading vlog specified by locator, a locator string can be decoded to EntryLocator
   //key is helpful to and is also available, so it's cheap.
   int _db_Get(const string &key, const string &locator, string &value);

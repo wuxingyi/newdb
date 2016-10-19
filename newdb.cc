@@ -21,6 +21,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <mutex>
+#include <condition_variable>
 
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
@@ -55,8 +57,13 @@ class VlogFileManager;
 class RocksDBWrapper;
 static VlogFileManager *pvfm = nullptr;
 static RocksDBWrapper *pdb = nullptr;
-
-int createFd(string path);
+static deque<rocksdb::Iterator *> dbprefetchQ;
+static deque<map<string, string>> vlogprefetchQ;
+static std::condition_variable db_cond;
+static std::mutex db_lock;
+static std::condition_variable vlog_cond;
+static std::mutex vlog_lock;
+static map<string, string> prefetchedKV;
 
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntryHeader struct
@@ -183,7 +190,7 @@ private:
   int fd;                  //fd of this vlog file
   int seq;                 //sequence of this vlog file
   int64_t tailOffset;      //writable offset of this vlog file
-  const int64_t maxVlogFileSize = 128*1024*1024; //set a upper bound for vlog file size
+  const int64_t maxVlogFileSize = 32*1024*1024; //set a upper bound for vlog file size
   string filename;         //name of this vlog file
   
 public:
@@ -445,6 +452,7 @@ public:
 //Only iterator operations cause prefechting,
 
 //wrapper of rocksdb::Iterator
+//(fixme) wrapper Iterator to hide rocksdb::Iterator
 Iterator::Iterator(rocksdb::Iterator *it):dbiter(it){}
 Iterator::~Iterator()
 {
@@ -454,7 +462,7 @@ Iterator::~Iterator()
 
 bool Iterator::ShouldTriggerPrefetch()
 {
-  if (successiveKeys >= 5)
+  if (successiveKeys >= 20)
   {
     return true;
   }
@@ -478,31 +486,40 @@ string Iterator::value()
     return string(dbiter->value().data(), dbiter->value().size());
 }
 
+//advance the iterator one step
 int Iterator::Next()
 {
+  int ret = -1;
   if(Valid())
   {
+    //we should be carefull not to change any state of dbiter
     dbiter->Next();
     ++successiveKeys;
+    ret = 0;
 
     if (ShouldTriggerPrefetch())
     {
-      //use rocksdb::Iterator is less wired than the wrappered Iterator
+      cout << __func__ << " :push to prefeching queue" << endl;
       rocksdb::Iterator *it = pdb->NewRocksdbIterator();
-      it->Seek(dbiter->key());
-      int fetchedKeys = 0;
-      while (it->Valid() && fetchedKeys < maxPrefetchKeys)
+      assert (nullptr != it);
+
+      //now we have been to the next of dbiter, check it
+      if (Valid())
       {
-        //put key/value pair to prefectedKV map
-        prefectedKV.insert(make_pair(string(dbiter->key().data(), dbiter->key().size()),
-                           string(dbiter->value().data(), dbiter->value().size())));
-        ++fetchedKeys;
-        it->Next();  
+        it->Seek(dbiter->key().data());
+        std::unique_lock<std::mutex> l(db_lock);
+        dbprefetchQ.push_back(it);
+        db_cond.notify_one();
+        successiveKeys = 0;
+      }
+      else
+      {
+        delete it;
       }
     }
   }
 
-  return dbiter->status().ok() ? 0 : -1;
+  return ret;
 }
 
 int Iterator::Prev()
@@ -551,8 +568,8 @@ private:
   int currentSeq = 0;            //seq for causual vlog files
   int availCompactingSeq = 1;            //seq for compacting vlog files
 public:
-  const string vfmWrittingKey = "WISCKEYDB:VlogFileManagerWritingSeq";
-  const string vfmCompactingKey = "WISCKEYDB:VlogFileManagerCompactingSeq";
+  static const string vfmWrittingKey ;
+  static const string vfmCompactingKey ;
 
 private:
   //whether a vlog file with @filename exists
@@ -603,10 +620,7 @@ public:
   {
     init();
   }
-  bool IsReservedKey(const string &key)
-  {
-    return (key == vfmWrittingKey || key == vfmCompactingKey);
-  }
+  static bool IsReservedKey(const string &key);
 
   //whether there is enough space to write
   VlogFile *PickVlogFileToWrite(size_t size)
@@ -808,7 +822,7 @@ private:
     }
 
     string vheaderkey(pkey, vheader.GetKeySize());
-    cout << "key is " << vheaderkey << endl;
+    //cout << "key is " << vheaderkey << endl;
 
     //we query rocksdb with keystring 
     string locator;
@@ -929,6 +943,14 @@ public:
     pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
   }
 };
+
+//those two keys are reserved by wisckeydb
+const string VlogFileManager::vfmWrittingKey = "WISCKEYDB:VlogFileManagerWritingSeq";
+const string VlogFileManager::vfmCompactingKey = "WISCKEYDB:VlogFileManagerCompactingSeq";
+bool VlogFileManager::IsReservedKey(const string &key)
+{
+  return (key == VlogFileManager::vfmWrittingKey || key == VlogFileManager::vfmCompactingKey);
+}
 
 //interface to deal with user requests
 //doesnot need to provide any data, only provide methods
@@ -1101,8 +1123,20 @@ int DBOperations::DB_Get(const string &key, string &value)
 {
   //wisckeydb reserved keys
   //wisckeydb will NEVER call this function, it directly call Get
-  if (pvfm->IsReservedKey(key))
+  if (VlogFileManager::IsReservedKey(key))
     return -1;
+
+  map<string,string>::iterator mapit = prefetchedKV.find(key);
+  if (mapit != prefetchedKV.end())
+  {
+    cout << "hit cache here" << endl;
+    value = string(mapit->second.data(), mapit->second.size());
+    return 0;
+  }
+  else
+  {
+    cout << "cache miss" << endl;
+  }
 
   string locator;
   int ret = pdb->Get(key, locator);
@@ -1251,9 +1285,116 @@ void DBOperations::DB_QueryRange(const string &key, int limit)
   delete it;
 }
 
+class InternalDBOperations : public DBOperations
+{
+public:
+  int DB_Get(const string &key, const string &locator, string &value)
+  {
+    return this->_db_Get(key, locator, value);  
+  }
+};
+
 inline std::ostream& operator<<(std::ostream& out, const timespec& t)
 {
   return out << t.tv_sec << "."<< t.tv_nsec << endl;
+}
+
+void do_db_prefetch()
+{
+  rocksdb::Iterator *it = dbprefetchQ.front();
+  ////use rocksdb::Iterator is less wierd than the wrappered Iterator
+  ////we do prefetching because it's after our key/value are seperated
+  ////we must first get 
+  int maxPrefetchKeys = 50;
+  int fetchedKeys = 0;
+  map<string, string> prefectedKV;
+  while (it->Valid() && fetchedKeys < maxPrefetchKeys)
+  {
+    //put key/value pair to prefectedKV map
+    prefectedKV.insert(make_pair(string(it->key().data(), it->key().size()),
+                       string(it->value().data(), it->value().size())));
+    ++fetchedKeys;
+    it->Next();  
+  }
+  cout << "we fetched " << fetchedKeys << " keys" << endl;
+  dbprefetchQ.pop_front();
+
+  //it's time to wake up vlog prefetch thread
+  {
+    std::unique_lock<std::mutex> l(vlog_lock);
+    vlogprefetchQ.push_back(prefectedKV);
+    vlog_cond.notify_one();
+  }
+
+  delete it;
+}
+
+void *dbPrefetchThread(void *p)
+{
+  cout << __func__ << endl;
+  std::unique_lock<std::mutex> l(db_lock);
+  while (true)
+  {
+    if (dbprefetchQ.empty())
+    {
+      cout << __func__ << " sleep" << endl;
+      db_cond.wait(l);
+      cout << __func__ << " wake" << endl;
+    }
+    else
+    {
+      do_db_prefetch();
+    }
+  }
+  return NULL;
+}
+
+void do_vlog_prefetch()
+{
+  map<string, string> prefectedKV = vlogprefetchQ.front();
+  for (auto i:prefectedKV)
+  {
+    if (false == VlogFileManager::IsReservedKey(i.first))
+    {
+      string value;
+      InternalDBOperations  iop; 
+      iop.DB_Get(i.first, i.second, value);
+      prefetchedKV.insert(make_pair(i.first, value));
+    }
+  }
+  vlogprefetchQ.pop_front();
+}
+
+void *vlogPrefetchThread(void *p)
+{
+  cout << __func__ << endl;
+  std::unique_lock<std::mutex> l(vlog_lock);
+  while (true)
+  {
+    if (vlogprefetchQ.empty())
+    {
+      cout << __func__ << " sleep" << endl;
+      vlog_cond.wait(l);
+      cout << __func__ << " wake" << endl;
+    }
+    else
+    {
+      do_vlog_prefetch();
+    }
+  }
+  return NULL;
+}
+
+void initPrefetch()
+{
+  pthread_attr_t *thread_attr = NULL;
+  pthread_t db_prefetch, vlog_prefetch;
+
+  int r = pthread_create(&db_prefetch, thread_attr, dbPrefetchThread, NULL);
+  assert(0 == r);
+
+  r = pthread_create(&vlog_prefetch, thread_attr, vlogPrefetchThread, NULL);
+  assert(0 == r);
 }
 
 ////this function is used to recover from a crash to make data and 
@@ -1405,7 +1546,7 @@ private:
     {
       cout << "this is the " << i <<"th" << endl;
       int num = rand();
-      string value(num/1000000,'c'); 
+      string value(num/100000,'c'); 
       string key = to_string(num);
       
       //cout << "before Put: key is " << key << endl;
@@ -1436,8 +1577,8 @@ private:
       int ret = op.DB_Get(string(it->key().data(), it->key().size()), value);  
       if (0 == ret)
       {
-        cout << "key is " << it->key().data() << endl;
-        cout << "value is " << value << endl;
+        //cout << "key is " << it->key().data() << endl;
+        //cout << "value is " << value << endl;
         
         //reserved keys are not count
         ++gotkeys;
@@ -1453,11 +1594,11 @@ private:
 public:
   void run()
   {
-    TEST_readwrite();
+    //TEST_readwrite();
     TEST_Iterator();
-    TEST_QueryAll();
-    TEST_QueryRange("66", 2);
-    TEST_QueryFrom("66");
+    //TEST_QueryAll();
+    //TEST_QueryRange("66", 2);
+    //TEST_QueryFrom("66");
   }
 };
 
@@ -1473,6 +1614,7 @@ void EnvSetup()
 int main(int argc, char **argv) 
 {
   EnvSetup();
+  initPrefetch();
   TEST test(argc, argv);
   test.run();
   return 0;
