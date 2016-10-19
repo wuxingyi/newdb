@@ -347,6 +347,7 @@ public:
     return new Iterator(db->NewIterator(rocksdb::ReadOptions()));
   }
 
+  //Iterator is a rocksdb::Iterator wrapper, but sometimes we only need rocksdb::Iterator
   rocksdb::Iterator *NewRocksdbIterator()
   {
     return db->NewIterator(rocksdb::ReadOptions());
@@ -457,6 +458,7 @@ bool Iterator::ShouldTriggerPrefetch()
   {
     return true;
   }
+  return false;
 }
 
 bool Iterator::Valid()
@@ -489,7 +491,7 @@ int Iterator::Next()
       rocksdb::Iterator *it = pdb->NewRocksdbIterator();
       it->Seek(dbiter->key());
       int fetchedKeys = 0;
-      while(it->Valid() && fetchedKeys < maxPrefetchKeys)
+      while (it->Valid() && fetchedKeys < maxPrefetchKeys)
       {
         //put key/value pair to prefectedKV map
         prefectedKV.insert(make_pair(string(dbiter->key().data(), dbiter->key().size()),
