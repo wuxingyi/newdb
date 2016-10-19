@@ -61,9 +61,12 @@ static int64_t compactTailOffset = 0;
 
 
 class VlogFileManager;
+class RocksDBWrapper;
+class Iterator;
 //VlogFileManager is singleton, only one instance
 //only used by the write/read thread
 static VlogFileManager *pvfm = nullptr;
+static RocksDBWrapper *pdb = nullptr;
 
 int createFd(string path);
 
@@ -327,75 +330,6 @@ public:
   }
 };
 
-class Iterator
-{
-private:
-  rocksdb::Iterator *dbiter = nullptr;
-public:
-  Iterator(rocksdb::Iterator *it):dbiter(it){}
-  ~Iterator()
-  {
-    assert(nullptr != dbiter);
-    delete dbiter;
-  }
-
-  bool Valid()
-  {
-    return dbiter->Valid();
-  }
-
-  string key()
-  {
-    if(Valid())
-      return string(dbiter->key().data(), dbiter->key().size());
-  }
-
-  string value()
-  {
-    if(Valid())
-      return string(dbiter->value().data(), dbiter->value().size());
-  }
-
-  int Next()
-  {
-    if(Valid())
-      dbiter->Next();
-    return dbiter->status().ok() ? 0 : -1;
-  }
-
-  int Prev()
-  {
-    if(Valid())
-      dbiter->Prev();
-    return dbiter->status().ok() ? 0 : -1;
-  }
-
-  int SeekToFirst()
-  {
-    dbiter->SeekToFirst();  
-    return dbiter->status().ok() ? 0 : -1;
-  }
-
-  int SeekToFirst(const string &prefix)
-  {
-    rocksdb::Slice slice_prefix(prefix);
-    dbiter->Seek(slice_prefix);  
-    return dbiter->status().ok() ? 0 : -1;
-  }
-
-  int Seek(const string &prefix)
-  {
-    rocksdb::Slice slice_prefix(prefix);
-    dbiter->Seek(slice_prefix);  
-    return dbiter->status().ok() ? 0 : -1;
-  }
-
-  int status()
-  {
-    return dbiter->status().ok() ? 0 : -1;
-  }
-};
-
 class RocksDBWrapper
 {
 private:
@@ -512,6 +446,123 @@ public:
   }
 };
 
+//where should we store the prefeched Vlog value?
+//maybe we should use pvfm
+//Only iterator operations cause prefechting,
+
+//wrapper of rocksdb::Iterator
+class Iterator
+{
+private:
+  rocksdb::Iterator *dbiter = nullptr;
+
+  //started with 0, increamented if a Prev/Next is called
+  //Seek opertaions does not need to change this variable
+  //should we reset this counter after a prefetching?
+  //ps.we may try luck the prefeched key/value, because it may have beed prefeched. 
+  int successiveKeys = 0;
+  const int maxPrefetchKeys = 100;
+  map<string, string> prefectedKV;
+public:
+  Iterator(rocksdb::Iterator *it):dbiter(it){}
+  ~Iterator()
+  {
+    assert(nullptr != dbiter);
+    delete dbiter;
+  }
+
+  bool ShouldTriggerPrefetch()
+  {
+    if (successiveKeys >= 5)
+    {
+      return true;
+    }
+  }
+
+  bool Valid()
+  {
+    return dbiter->Valid();
+  }
+
+  string key()
+  {
+    if(Valid())
+      return string(dbiter->key().data(), dbiter->key().size());
+  }
+
+  string value()
+  {
+    if(Valid())
+      return string(dbiter->value().data(), dbiter->value().size());
+  }
+
+  int Next()
+  {
+    if(Valid())
+    {
+      dbiter->Next();
+      ++successiveKeys;
+
+      if (ShouldTriggerPrefetch())
+      {
+        //use rocksdb::Iterator is less wired than the wrappered Iterator
+        rocksdb::Iterator *it = pdb->NewIterator();
+        it->Seek(dbiter->key());
+        int fetchedKeys = 0;
+        while(it->Valid() && fetchedKeys < maxPrefetchKeys)
+        {
+          //put key/value pair to prefectedKV map
+          prefectedKV.insert(string(dbiter->key().data(), dbiter->key().size()),
+                             string(dbiter->value().data(), dbiter->value().size()));
+          ++fetchedKeys;
+          it->Next();  
+        }
+      }
+    }
+
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int Prev()
+  {
+    if(Valid())
+    {
+      dbiter->Prev();
+      ++successiveKeys;
+      if (ShouldTriggerPrefetch())
+      {
+        
+      }
+    }
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int SeekToFirst()
+  {
+    dbiter->SeekToFirst();  
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int SeekToFirst(const string &prefix)
+  {
+    rocksdb::Slice slice_prefix(prefix);
+    dbiter->Seek(slice_prefix);  
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int Seek(const string &prefix)
+  {
+    rocksdb::Slice slice_prefix(prefix);
+    dbiter->Seek(slice_prefix);  
+    return dbiter->status().ok() ? 0 : -1;
+  }
+
+  int status()
+  {
+    return dbiter->status().ok() ? 0 : -1;
+  }
+};
+
 struct VlogFileManager
 {
 private:
@@ -522,11 +573,7 @@ public:
   const string vfmWrittingKey = "WISCKEYDB:VlogFileManagerWritingSeq";
   const string vfmCompactingKey = "WISCKEYDB:VlogFileManagerCompactingSeq";
 
-  //we use rocksdb to store vlog manager metadata
-  //it contains information about the biggest seq of vlog
 private:
-  RocksDBWrapper *pDb;
-  
   //whether a vlog file with @filename exists
   bool isVlogExist(string filename)
   {
@@ -541,7 +588,7 @@ private:
   bool init()
   {
     string seqstring;
-    int ret = pDb->Get(vfmWrittingKey, seqstring);  
+    int ret = pdb->Get(vfmWrittingKey, seqstring);  
     if (ret != 0)
     {
       //no key is found, so this is no vlog files
@@ -565,19 +612,13 @@ private:
     //put seq 0 to rocksdb
     if (0 == currentSeq)
     {
-      pDb->SyncPut(VlogFileManager::vfmWrittingKey, to_string(currentSeq));
+      pdb->SyncPut(VlogFileManager::vfmWrittingKey, to_string(currentSeq));
     }
   }
 
 public:
-  RocksDBWrapper *GetDbHandler()
-  {
-    assert(nullptr != pDb);
-    return pDb;
-  }
-
   //make sure rocksdb db instance has been initiated
-  VlogFileManager(RocksDBWrapper *pDb_):pDb(pDb_)
+  VlogFileManager()
   {
     init();
   }
@@ -595,7 +636,7 @@ public:
       currentSeq += 2;
       VlogFile *vf = new VlogFile(currentSeq); 
       allfiles.insert(make_pair(currentSeq, vf));
-      pDb->SyncPut(vfmWrittingKey, to_string(currentSeq));
+      pdb->SyncPut(vfmWrittingKey, to_string(currentSeq));
     }
 
     return allfiles[currentSeq];
@@ -790,7 +831,7 @@ private:
 
     //we query rocksdb with keystring 
     string locator;
-    ret = GetDbHandler()->Get(vheaderkey, locator);
+    ret = pdb->Get(vheaderkey, locator);
     if (0 != ret)
     {
       //it's already deleted,so the space must be freed. 
@@ -845,7 +886,7 @@ private:
         EntryLocator dblocator(destvf->GetTailOffset(), length, dblocator.GetTimeStamp(), destseq);
         dblocator.encode(EntryLocatorString);
 
-        ret = GetDbHandler()->Put(vheaderkey, EntryLocatorString);
+        ret = pdb->Put(vheaderkey, EntryLocatorString);
         assert(0 == ret);
 
         //advance the copacted vlog tail
@@ -870,7 +911,7 @@ public:
   int CompactVlog(int srcseq, int64_t vlogoffset)
   {
     string sseq;
-    int ret = GetDbHandler()->Get(vfmCompactingKey, sseq);  
+    int ret = pdb->Get(vfmCompactingKey, sseq);  
     if (ret != 0)
     {
       //no key is found, so this is no vlog files
@@ -894,7 +935,7 @@ public:
     //put seq 1 to rocksdb
     if (1 == availCompactingSeq)
     {
-      GetDbHandler()->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+      pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
     }
 
     //we should apply a new VlogFile for compaction
@@ -904,7 +945,7 @@ public:
     //after compaction, the file should be closed
     //after compaction, update the availCompactingSeq
     availCompactingSeq += 2;
-    GetDbHandler()->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+    pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
   }
 };
 
@@ -986,7 +1027,7 @@ public:
       }
     }
 
-    ret = pvfm->GetDbHandler()->BatchPut(wbatch); 
+    ret = pdb->BatchPut(wbatch); 
     if (0 != ret)
     {
       //fixme: should convert return code
@@ -1028,7 +1069,7 @@ public:
     
     string elstring;
     el.encode(elstring);
-    ret = pvfm->GetDbHandler()->SyncPut(key, elstring); 
+    ret = pdb->SyncPut(key, elstring); 
     if (0 != ret)
     {
       //fixme: should convert return code
@@ -1036,7 +1077,50 @@ public:
     }
   }
 
+private:
+  //reading vlog specified by locator, a locator string can be decoded to EntryLocator
+  //key is helpful to and is also available, so it's cheap.
+  int _db_Get(const string &key, const string &locator, string &value)
+  {
+    //time is not used in this function
+    timespec time;
+    EntryLocator el(0, 0);
+    el.decode(locator);
+    VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
+
+    assert(nullptr != vf);
+    
+    int kvsize = el.GetLength();
+
+    char p[kvsize];
+    int ret = vf->Read(p, kvsize, el.GetOffset());
+    if (0 != ret)
+    {
+      return ret;
+    }
+
+    //kvsize = sizeof(VlogOndiskEntryHeader) + keysize + valuesize
+    VlogOndiskEntryHeader *vheader = (VlogOndiskEntryHeader *)p;
+  
+    //cout << "db keysize is " << vheader->GetKeySize() << endl;
+    //cout << "keysize is " << key.size() << endl;
+    assert(vheader->GetKeySize() == key.size());
+
+    string readkey, readvalue;
+    readkey = string(p + sizeof(VlogOndiskEntryHeader), key.size());
+    value = string(p + sizeof(VlogOndiskEntryHeader) + key.size(), vheader->GetValueSize());
+
+    if (readkey != key)
+    {
+      cout << "readkey is " << readkey << ", key is " << key << endl;
+      assert(0);
+    }
+    return 0;
+  }
+
+public:
   //retrive @value by @key, if exists, the @value will be read from vlog
+  //the key/value maybe have already been prefetched, so we should search it first. 
   int DB_Get(const string &key, string &value)
   {
     //wisckeydb reserved keys
@@ -1045,7 +1129,7 @@ public:
       return -1;
 
     string locator;
-    int ret = pvfm->GetDbHandler()->Get(key, locator);
+    int ret = pdb->Get(key, locator);
     if (0 != ret)
       return ret;
 
@@ -1088,7 +1172,7 @@ public:
   //implement range query which is not parallel
   void DB_QueryAll()
   {
-    Iterator* it = pvfm->GetDbHandler()->NewIterator();
+    Iterator* it = pdb->NewIterator();
   
     string value;
     int gotkeys = 0;
@@ -1116,7 +1200,7 @@ public:
   //(TODO)should use output paras, not cout
   void DB_ParallelQuery()
   {
-    Iterator* it = pvfm->GetDbHandler()->NewIterator();
+    Iterator* it = pdb->NewIterator();
   
     //TODO(wuxingyi): use workqueue here
     std::vector<std::thread> workers;
@@ -1141,7 +1225,7 @@ public:
   void DB_QueryFrom(const string &key)
   {
     cout << __func__ << endl;
-    Iterator* it = pvfm->GetDbHandler()->NewIterator();
+    Iterator* it = pdb->NewIterator();
   
     string value;
     //note that rocksdb is also used by wisckeydb to store vlog file metadata,
@@ -1162,7 +1246,7 @@ public:
 
   Iterator *DB_GetIterator()
   {
-    return pvfm->GetDbHandler()->NewIterator();
+    return pdb->NewIterator();
   }
 
   //query from key, at most limit entries
@@ -1170,7 +1254,7 @@ public:
   void DB_QueryRange(const string &key, int limit)
   {
     cout << __func__ << endl;
-    Iterator* it = pvfm->GetDbHandler()->NewIterator();
+    Iterator* it = pdb->NewIterator();
   
     string value;
     int queriedKeys = 0;
@@ -1407,8 +1491,11 @@ public:
 
 void EnvSetup()
 {
-  //pvfm is globally visible
-  pvfm = new VlogFileManager((new RocksDBWrapper(kDBPath)));
+  //pdb and pvfm is globally visible
+  pdb = new RocksDBWrapper(kDBPath); 
+  pvfm = new VlogFileManager();
+  assert(nullptr != pdb);
+  assert(nullptr != pvfm);
 }
 
 int main(int argc, char **argv) 

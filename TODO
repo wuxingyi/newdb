@@ -32,3 +32,5 @@
    so we cannot write remaining data to the header of a new vlog file.
 29.fix too many open files problem
 30.use shared_ptr to avoid resource leak
+31.implement vlog readahead
+32.it's ridiculous to composite DBWrapper into VlogFileManager
