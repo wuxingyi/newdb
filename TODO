@@ -34,3 +34,4 @@
 30.use shared_ptr to avoid resource leak
 31.implement vlog readahead
 32.it's ridiculous to composite DBWrapper into VlogFileManager (DONE)
+33.replace timestamp with sequence number
