@@ -39,3 +39,4 @@
 35.when to trigger compaction?
 36.VlogFileManger should know all the vlog files
 37.we should record whether a vlog is writable?
+38.disable rocksdb WAL for performance, add WiscKeydb recovery
