@@ -36,3 +36,6 @@
 32.it's ridiculous to composite DBWrapper into VlogFileManager (DONE)
 33.replace timestamp with sequence number
 34.optimize encode/decode
+35.when to trigger compaction?
+36.VlogFileManger should know all the vlog files
+37.we should record whether a vlog is writable?
