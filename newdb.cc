@@ -59,10 +59,10 @@ static VlogFileManager *pvfm = nullptr;
 static RocksDBWrapper *pdb = nullptr;
 static deque<rocksdb::Iterator *> dbprefetchQ;
 static deque<map<string, string>> vlogprefetchQ;
-static std::condition_variable db_cond;
-static std::mutex db_lock;
-static std::condition_variable vlog_cond;
-static std::mutex vlog_lock;
+static std::condition_variable db_prefetchCond;
+static std::mutex db_prefetchLock;
+static std::condition_variable vlog_prefetchCond;
+static std::mutex vlog_prefetchLock;
 static map<string, string> prefetchedKV;
 
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
@@ -507,9 +507,9 @@ int Iterator::Next()
       if (Valid())
       {
         it->Seek(dbiter->key().data());
-        std::unique_lock<std::mutex> l(db_lock);
+        std::unique_lock<std::mutex> l(db_prefetchLock);
         dbprefetchQ.push_back(it);
-        db_cond.notify_one();
+        db_prefetchCond.notify_one();
         successiveKeys = 0;
       }
       else
@@ -1321,9 +1321,9 @@ void do_db_prefetch()
 
   //it's time to wake up vlog prefetch thread
   {
-    std::unique_lock<std::mutex> l(vlog_lock);
+    std::unique_lock<std::mutex> l(vlog_prefetchLock);
     vlogprefetchQ.push_back(prefectedKV);
-    vlog_cond.notify_one();
+    vlog_prefetchCond.notify_one();
   }
 
   delete it;
@@ -1332,13 +1332,13 @@ void do_db_prefetch()
 void *dbPrefetchThread(void *p)
 {
   cout << __func__ << endl;
-  std::unique_lock<std::mutex> l(db_lock);
+  std::unique_lock<std::mutex> l(db_prefetchLock);
   while (true)
   {
     if (dbprefetchQ.empty())
     {
       cout << __func__ << " sleep" << endl;
-      db_cond.wait(l);
+      db_prefetchCond.wait(l);
       cout << __func__ << " wake" << endl;
     }
     else
@@ -1368,13 +1368,13 @@ void do_vlog_prefetch()
 void *vlogPrefetchThread(void *p)
 {
   cout << __func__ << endl;
-  std::unique_lock<std::mutex> l(vlog_lock);
+  std::unique_lock<std::mutex> l(vlog_prefetchLock);
   while (true)
   {
     if (vlogprefetchQ.empty())
     {
       cout << __func__ << " sleep" << endl;
-      vlog_cond.wait(l);
+      vlog_prefetchCond.wait(l);
       cout << __func__ << " wake" << endl;
     }
     else
