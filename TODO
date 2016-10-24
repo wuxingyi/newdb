@@ -35,16 +35,22 @@
 31.implement vlog readahead
 32.it's ridiculous to composite DBWrapper into VlogFileManager (DONE)
 33.replace timestamp with sequence number
-34.optimize encode/decode
+34.optimize encode/decode, stole from rocksdb
 35.when to trigger compaction?
 36.VlogFileManger should know all the vlog files
 37.we should record whether a vlog is writable?
-38.disable rocksdb WAL for performance, add WiscKeydb recovery
+38.disable rocksdb WAL for performance, add WiscKeydb recovery(WON'T FIX):
+   it's impossible to recover if WAL is totally disabled, the author of original paper claimed that it's possible
+   to record the head offset in lsm with kv pair <"head", head-vlog-offset>, and use it for recovery,
+   while the head-vlog-offset means all (key, vlog-locator) pairs all have been wrote to lsm, however, without WAL, 
+   we actually have no idea whether the (key, vlog-locator) are persistted, if we set hook to memtable flush,
+   it's hard for us to know the biggest offset (aka vlog-offset we want to know), because it's only the keys are
+   sorted, and we want a sortted biggest value. It's really efficient and complicated to disable WAL for perforamnce.
+
 39.support snapshot
 40.check validity of input offset/length according to current vlog offset 
 41.is it possible a key is exist in lsm, but not in vlog? now we think it impossible.
 42.suppport async inserts, we now always use sync ones, write vlog syncly, and then write lsm
-43.recover key from vlog and disable lsm wal.
 44.posix_fadvise() when point query and range query
 45.fix to many open files
 46.use vlog thread and db thread to process requests
