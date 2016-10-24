@@ -31,3 +31,12 @@
 28.should we skip if the vlog file is full? we rely on the offset 0 to be a good header.
    so we cannot write remaining data to the header of a new vlog file.
 29.fix too many open files problem
+30.use shared_ptr to avoid resource leak
+31.implement vlog readahead
+32.it's ridiculous to composite DBWrapper into VlogFileManager (DONE)
+33.replace timestamp with sequence number
+34.optimize encode/decode
+35.when to trigger compaction?
+36.VlogFileManger should know all the vlog files
+37.we should record whether a vlog is writable?
+38.disable rocksdb WAL for performance, add WiscKeydb recovery
