@@ -40,3 +40,11 @@
 36.VlogFileManger should know all the vlog files
 37.we should record whether a vlog is writable?
 38.disable rocksdb WAL for performance, add WiscKeydb recovery
+39.support snapshot
+40.check validity of input offset/length according to current vlog offset 
+41.is it possible a key is exist in lsm, but not in vlog? now we think it impossible.
+42.suppport async inserts, we now always use sync ones, write vlog syncly, and then write lsm
+43.recover key from vlog and disable lsm wal.
+44.posix_fadvise() when point query and range query
+45.fix to many open files
+46.use vlog thread and db thread to process requests
