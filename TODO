@@ -47,7 +47,9 @@
    it's hard for us to know the biggest offset (aka vlog-offset we want to know), because it's only the keys are
    sorted, and we want a sortted biggest value. It's really efficient and complicated to disable WAL for perforamnce.
 
-39.support snapshot
+39.to support snapshot, we should:
+   1.tracking all the live vlog files, never remove dependent vlog files.
+   2.the snapshot sequence s1 is provided, when iterating, we should skip the s1 newer than sq.
 40.check validity of input offset/length according to current vlog offset 
 41.is it possible a key is exist in lsm, but not in vlog? now we think it impossible.
 42.suppport async inserts, we now always use sync ones, write vlog syncly, and then write lsm
@@ -60,3 +62,4 @@
    2.easy to find the boundry
    3.mush smaller memory allocation
 49.posix_fadvise() is also used for big value readahead
+50.we don't need to support column family.
