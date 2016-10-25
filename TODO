@@ -36,7 +36,7 @@
 32.it's ridiculous to composite DBWrapper into VlogFileManager (DONE)
 33.replace timestamp with sequence number
 34.optimize encode/decode, stole from rocksdb
-35.when to trigger compaction?
+35.when to trigger compaction? compaction is only used for disk space reclaim, doing it may cause performance decrease, so we should not compact when there is high pressure. Actually we can trigger it mannually or periodly.
 36.VlogFileManger should know all the vlog files
 37.we should record whether a vlog is writable?
 38.disable rocksdb WAL for performance, add WiscKeydb recovery(WON'T FIX):
@@ -54,3 +54,9 @@
 44.posix_fadvise() when point query and range query
 45.fix to many open files
 46.use vlog thread and db thread to process requests
+47.what if crash during compaction, interrupted compaction
+48.seperate vlog to small blocks, it may have main three benefits:
+   1.jump to next block if one block disk drive failed, current implemention cannot do this
+   2.easy to find the boundry
+   3.mush smaller memory allocation
+49.posix_fadvise() is also used for big value readahead
