@@ -1472,8 +1472,8 @@ private:
   
     for (int i = 0; i < testkeys; i++)
     {
-  	string randkey = to_string(rand());
-  	string randvalue = string(rand()/10000000, 'c');
+      string randkey = to_string(rand());
+      string randvalue = string(rand()/10000000, 'c');
       keys.push_back(randkey);
       values.push_back(randvalue);
       deleteflags.push_back(false);
@@ -1594,7 +1594,7 @@ private:
 public:
   void run()
   {
-    //TEST_readwrite();
+    TEST_readwrite();
     TEST_Iterator();
     //TEST_QueryAll();
     //TEST_QueryRange("66", 2);
