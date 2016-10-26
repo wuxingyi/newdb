@@ -1,4 +1,3 @@
-flushtosst
 newdb
 .exrc
-DBDATA/*
+src/DBDATA/*
