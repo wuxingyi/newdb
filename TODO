@@ -48,8 +48,11 @@
    sorted, and we want a sortted biggest value. It's really efficient and complicated to disable WAL for perforamnce.
 
 39.to support snapshot, we should:
-   1.tracking all the live vlog files, never remove dependent vlog files.
-   2.the snapshot sequence s1 is provided, when iterating, we should skip the s1 newer than sq.
+   1.tracking all the live vlog files, never remove dependent vlog files, add reference count for vlog files.
+      "While we create a version, we incremented the reference counts for all files. If a version is not needed, 
+       all files’ of the version have their reference counts decremented. If a file’s reference count drops to 0, the file can be deleted."
+      "https://github.com/facebook/rocksdb/wiki/How-we-keep-track-of-live-SST-files"
+   2.the snapshot sequence s1 is provided, when iterating or getting, we should skip the s1 newer than sq.
 40.check validity of input offset/length according to current vlog offset 
 41.is it possible a key is exist in lsm, but not in vlog? now we think it impossible.
 42.suppport async inserts, we now always use sync ones, write vlog syncly, and then write lsm
