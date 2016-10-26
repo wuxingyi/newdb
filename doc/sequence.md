@@ -15,4 +15,7 @@ So we should manage sequence numbers ourselves.
 we should implement a machnism similar to rocksdb build-in version. Outter
 classes apply for a sequence number for Put/Get/BatchPut.
 
+### how to manage sequence
+when start up, we can read the lattest vlog file to decode the last sequence.
+the sequence is persists in vlog, so can be safely retrived.
 
