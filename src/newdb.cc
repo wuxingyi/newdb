@@ -65,21 +65,18 @@ static std::condition_variable vlog_prefetchCond;
 static std::mutex vlog_prefetchLock;
 static map<string, string> prefetchedKV;
 
+typedef uint64_t SequenceNumber;
+static SequenceNumber lastOperatedSeq = 0;
+
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntryHeader struct
-inline bool operator<(const timespec &a, const timespec& b)
-{
-  return ((a.tv_sec < b.tv_sec) || 
-		 ((a.tv_sec == b.tv_sec) && 
-		 ((a.tv_nsec < b.tv_nsec))));
-}
 struct VlogOndiskEntryHeader
 {
 private:
   int64_t keysize = 0;
   int64_t valuesize = 0;
   int64_t magic = 0x007007;
-  timespec timestamp;
+  SequenceNumber entrySeq;
 
 public:
   int64_t GetKeySize()
@@ -92,12 +89,12 @@ public:
     return valuesize;
   }
 
-  timespec GetTimeStamp()
+  SequenceNumber GetEntrySeq()
   {
-    return timestamp;
+    return entrySeq;
   }
-  VlogOndiskEntryHeader(int64_t keysize_, int64_t valuesize_, const timespec &timestamp_):
-				  keysize(keysize_),valuesize(valuesize_),timestamp(timestamp_){}
+  VlogOndiskEntryHeader(int64_t keysize_, int64_t valuesize_, const SequenceNumber entrySeq_):
+				  keysize(keysize_),valuesize(valuesize_),entrySeq(entrySeq_){}
 
   VlogOndiskEntryHeader(int64_t keysize_, int64_t valuesize_):
 				  keysize(keysize_),valuesize(valuesize_){}
@@ -105,7 +102,7 @@ public:
   {
     keysize = other.keysize;
     valuesize = other.valuesize;
-    timestamp = other.timestamp;
+    entrySeq = other.entrySeq;
   }
 
   //encode a VlogOndiskEntryHeader struct to a string
@@ -130,7 +127,7 @@ public:
     pfixedentry = (VlogOndiskEntryHeader *)p;
     this->keysize = pfixedentry->keysize;
     this->valuesize = pfixedentry->valuesize;
-    this->timestamp = pfixedentry->timestamp;
+    this->entrySeq = pfixedentry->entrySeq;
   }
 };
 
@@ -139,11 +136,11 @@ struct EntryLocator
 private:
   int64_t offset = 0;
   int64_t length = 0;
-  timespec timestamp = {0};
+  SequenceNumber locatorSeq;
   int vlogseq = 0; //which vlog file does this entry exists
 public:
-  EntryLocator(int64_t offset_, int64_t length_, const timespec &timestamp_, int seq):
-		   offset(offset_), length(length_),timestamp(timestamp_), vlogseq(seq){}
+  EntryLocator(int64_t offset_, int64_t length_, SequenceNumber locatorSeq_, int seq):
+		   offset(offset_), length(length_),locatorSeq(locatorSeq_), vlogseq(seq){}
   EntryLocator(int64_t offset_, int64_t length_):
 		   offset(offset_), length(length_){}
 
@@ -169,9 +166,9 @@ public:
     return vlogseq;  
   }
 
-  timespec GetTimeStamp()
+  SequenceNumber GetLocatorSeq()
   {
-    return timestamp;  
+    return locatorSeq;  
   }
   
   int64_t GetLength()
@@ -612,6 +609,12 @@ private:
     {
       pdb->SyncPut(VlogFileManager::vfmWrittingKey, to_string(currentSeq));
     }
+
+    if (0 < vf->GetTailOffset())
+    {
+      lastOperatedSeq = this->getLatestSeq(vf->GetSeq(), 0);
+      cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
+    }
   }
 
 public:
@@ -686,6 +689,48 @@ public:
   }
 
 private:
+  //traverse the latest VlogFile to get the lastest Seq
+  SequenceNumber getLatestSeq(int seq, int vlogoffset)
+  {
+    static SequenceNumber currSeq = 0;
+    if (nullptr == allfiles[seq])
+    {
+      cout << "file does not exist" << endl;
+      return -1;
+    }
+
+    VlogFile *vf = allfiles[seq];
+    if (vlogoffset >= vf->GetTailOffset())
+    {
+      cout << "no more entries in vlog, traverse finished" << endl;; 
+      return currSeq;
+    }
+
+    int64_t keysize, valuesize;
+    int fixedsize = sizeof(struct VlogOndiskEntryHeader);
+
+    char p[fixedsize];
+  
+    int ret = vf->Read(p, fixedsize, vlogoffset);
+    if (0 != ret)
+    {
+      cerr << "error in writting vlog entry, error is " << ret << endl;
+      return -1;
+    }
+    
+    string kvstring(p, fixedsize);
+
+    //got keysize/valeusize from kvstring
+    VlogOndiskEntryHeader vheader(0, 0);
+    vheader.decode(kvstring);
+    currSeq = vheader.GetEntrySeq();
+    int64_t nextoffset = vlogoffset + fixedsize + vheader.GetValueSize() + vheader.GetKeySize(); 
+    if (nextoffset < vf->GetTailOffset())
+      return getLatestSeq(seq, nextoffset);
+    else
+      return currSeq;
+  }
+
   //traverse a VlogFile with sequence seq
   int traverseVlog(int seq, int vlogoffset)
   {
@@ -707,7 +752,6 @@ private:
     int64_t keysize, valuesize;
     int fixedsize = sizeof(struct VlogOndiskEntryHeader);
 
-    timespec vlogtime;
     char p[fixedsize];
   
     int ret = vf->Read(p, fixedsize, vlogoffset);
@@ -849,8 +893,8 @@ private:
       EntryLocator dblocator(0, 0);
       dblocator.decode(locator);
 
-      timespec vlogtimestamp = vheader.GetTimeStamp();
-      if (vlogtimestamp < dblocator.GetTimeStamp())
+      SequenceNumber entrySeq = vheader.GetEntrySeq();
+      if (entrySeq < dblocator.GetLocatorSeq())
       {
         //this is a outdated value, we just skip this entry
         cout << "this is an outdated value, we just skip" << endl;
@@ -878,7 +922,7 @@ private:
         //after write the vlog, we should also update the rocksdb entry
         //note that we use the original db timestamp
         string EntryLocatorString;
-        EntryLocator dblocator(destvf->GetTailOffset(), length, dblocator.GetTimeStamp(), destseq);
+        EntryLocator dblocator(destvf->GetTailOffset(), length, dblocator.GetLocatorSeq(), destseq);
         dblocator.encode(EntryLocatorString);
 
         ret = pdb->Put(vheaderkey, EntryLocatorString);
@@ -970,14 +1014,14 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
   string vlogBatchString;
   string dbBatchString;
 
-  //vector to store db entries writing time
-  vector<timespec> times;
+  //vector to store db entries writing Seqs
+  vector<SequenceNumber> Seqs;
+  SequenceNumber curSeq;
 
   for (int i = 0; i < nums; i++)
   {
-    timespec currenttime;
-    clock_gettime(CLOCK_REALTIME, &currenttime);
-    times.push_back(currenttime);
+    curSeq = ++lastOperatedSeq;
+    Seqs.push_back(curSeq);
     
     //it's unnecessary to write vlog when deletion
     if (true == deleteflags[i]) 
@@ -986,8 +1030,8 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
     }
 
     //encode the vlog string
-    //each entry should have his own timespec
-    VlogOndiskEntryHeader vheader(keys[i].size(), values[i].size(), currenttime);
+    //each entry should have his own Sequence
+    VlogOndiskEntryHeader vheader(keys[i].size(), values[i].size(), curSeq);
     string vlogstring;
 
     //what we need to write is vheader + key[i] + value[i]
@@ -1020,7 +1064,7 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
     else
     {
       string EntryLocatorString;
-      EntryLocator el(currentoffset, fixedsize + keys[i].size() + values[i].size(), times[i], p->GetSeq());
+      EntryLocator el(currentoffset, fixedsize + keys[i].size() + values[i].size(), Seqs[i], p->GetSeq());
       el.encode(EntryLocatorString);
       wbatch.Put(keys[i], EntryLocatorString);
       currentoffset += fixedsize + keys[i].size() + values[i].size();
@@ -1041,10 +1085,11 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
 //has not been written to rocksdb yet.
 int DBOperations::DB_Put(const string &key, const string &value)
 {
-  timespec currenttime;
-  clock_gettime(CLOCK_REALTIME, &currenttime);
-  VlogOndiskEntryHeader vheader(key.size(), value.size(), currenttime);
+  SequenceNumber Seq = ++lastOperatedSeq;
+  VlogOndiskEntryHeader vheader(key.size(), value.size(), Seq);
   string vlogstring;
+
+  cout << "we are using " << Seq << endl;
 
   //what we need to write is vheader + key + value
   //(fixme): it may be very large
@@ -1056,7 +1101,7 @@ int DBOperations::DB_Put(const string &key, const string &value)
   VlogFile *p = pvfm->PickVlogFileToWrite(needwritesize);
   int64_t originalOffset = p->GetTailOffset();
 
-  cout << "original offset is " << originalOffset << endl;
+  //cout << "original offset is " << originalOffset << endl;
   int ret = p->Write(vlogstring);
   if (0 != ret)
   {
@@ -1065,7 +1110,7 @@ int DBOperations::DB_Put(const string &key, const string &value)
   }
 
   //write to rocksdb
-  EntryLocator el(originalOffset, needwritesize, currenttime, p->GetSeq());
+  EntryLocator el(originalOffset, needwritesize, Seq, p->GetSeq());
   
   string elstring;
   el.encode(elstring);
@@ -1081,8 +1126,6 @@ int DBOperations::DB_Put(const string &key, const string &value)
 //key is helpful to and is also available, so it's cheap.
 int DBOperations::_db_Get(const string &key, const string &locator, string &value)
 {
-  //time is not used in this function
-  timespec time;
   EntryLocator el(0, 0);
   el.decode(locator);
   VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
@@ -1143,8 +1186,6 @@ int DBOperations::DB_Get(const string &key, string &value)
   if (0 != ret)
     return ret;
 
-  //time is not used in this function
-  timespec time;
   EntryLocator el(0, 0);
   el.decode(locator);
   VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
@@ -1546,7 +1587,7 @@ private:
     {
       cout << "this is the " << i <<"th" << endl;
       int num = rand();
-      string value(num/100000,'c'); 
+      string value(num/1000,'c'); 
       string key = to_string(num);
       
       //cout << "before Put: key is " << key << endl;
@@ -1595,7 +1636,7 @@ public:
   void run()
   {
     TEST_readwrite();
-    TEST_Iterator();
+    //TEST_Iterator();
     //TEST_QueryAll();
     //TEST_QueryRange("66", 2);
     //TEST_QueryFrom("66");
