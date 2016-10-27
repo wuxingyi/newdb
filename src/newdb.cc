@@ -580,7 +580,7 @@ private:
     return true;
   }
 
-  bool init()
+  bool vfminit()
   {
     string seqstring;
     int ret = pdb->Get(vfmWrittingKey, seqstring);  
@@ -615,13 +615,33 @@ private:
       lastOperatedSeq = this->getLatestSeq(vf->GetSeq(), 0);
       cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
     }
+
+    //maybe the biggest Seq is in the compacted vlog
+    string cseqstring;
+    ret = pdb->Get(vfmCompactingKey, cseqstring);  
+    if (0 == ret)
+    {
+      int64_t seq = atoi(cseqstring.c_str()) - 2;
+
+      assert(seq % 2 == 1);
+      //put the VlogFile to vector
+      VlogFile *vf = new VlogFile(seq); 
+      assert(nullptr != vf);
+
+      allfiles.insert(make_pair(seq, vf));
+      if (0 < vf->GetTailOffset())
+      {
+        lastOperatedSeq = this->getLatestSeq(vf->GetSeq(), 0);
+        cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
+      }
+    }
   }
 
 public:
   //make sure rocksdb db instance has been initiated
   VlogFileManager()
   {
-    init();
+    vfminit();
   }
   static bool IsReservedKey(const string &key);
 
@@ -693,6 +713,8 @@ private:
   SequenceNumber getLatestSeq(int seq, int vlogoffset)
   {
     static SequenceNumber currSeq = 0;
+
+    cout << __func__ << ": we are using " << currSeq << endl;
     if (nullptr == allfiles[seq])
     {
       cout << "file does not exist" << endl;
@@ -725,10 +747,20 @@ private:
     vheader.decode(kvstring);
     currSeq = vheader.GetEntrySeq();
     int64_t nextoffset = vlogoffset + fixedsize + vheader.GetValueSize() + vheader.GetKeySize(); 
+
+    cout << "nextoffset is " << nextoffset << endl;
+    cout << "tailoffset is " << vf->GetTailOffset() << endl;
+    //(fixme)don't use recursion
     if (nextoffset < vf->GetTailOffset())
+    {
+      cout << __func__ << " <= " << endl;
       return getLatestSeq(seq, nextoffset);
+    }
     else
+    {
+      cout << __func__ << " > " << endl;
       return currSeq;
+    }
   }
 
   //traverse a VlogFile with sequence seq
@@ -884,6 +916,7 @@ private:
       else
       {
         //all items has been compacted
+        //(fixme) cannot delete vlog file here, manage all vlog files
         RemoveVlogFile(srcseq);
       }
     }
@@ -914,15 +947,16 @@ private:
           cerr << "error in reding src entry, error is " << readret << endl;
         }
 
+        int64_t destOff = destvf->GetTailOffset();
         //write to dest vlogfile
-        cout << "writing to destvf at offset " << destvf->GetTailOffset() << endl;
+        cout << "writing to destvf at offset " << destOff << endl;
         int writeret = destvf->Write(string(p, length));
         assert(writeret == 0);
 
         //after write the vlog, we should also update the rocksdb entry
         //note that we use the original db timestamp
         string EntryLocatorString;
-        EntryLocator dblocator(destvf->GetTailOffset(), length, dblocator.GetLocatorSeq(), destseq);
+        EntryLocator dblocator(destOff, length, entrySeq, destseq);
         dblocator.encode(EntryLocatorString);
 
         ret = pdb->Put(vheaderkey, EntryLocatorString);
@@ -981,7 +1015,7 @@ public:
     //maybe we should use a big number seq to avoid seq race condition
     compactToNewVlog(srcseq, availCompactingSeq, 0);
 
-    //after compaction, the file should be closed
+    //(fixme)after compaction, the file should be closed
     //after compaction, update the availCompactingSeq
     availCompactingSeq += 2;
     pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
@@ -1021,29 +1055,36 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
   for (int i = 0; i < nums; i++)
   {
     curSeq = ++lastOperatedSeq;
+    cout << __func__ << ": we are using " << curSeq << endl;
     Seqs.push_back(curSeq);
     
-    //it's unnecessary to write vlog when deletion
-    if (true == deleteflags[i]) 
+    //record to vlog even when deletion
+    VlogOndiskEntryHeader vheader(keys[i].size(), 0, curSeq);
+    if (true != deleteflags[i]) 
     {
-      continue;
+      //if it's a Put, we should record its keysize and valuesize
+      vheader = VlogOndiskEntryHeader(keys[i].size(), values[i].size(), curSeq);
     }
 
     //encode the vlog string
-    //each entry should have his own Sequence
-    VlogOndiskEntryHeader vheader(keys[i].size(), values[i].size(), curSeq);
     string vlogstring;
-
-    //what we need to write is vheader + key[i] + value[i]
     vheader.encode(vlogstring);
-    vlogBatchString += vlogstring + keys[i] + values[i];
+    if (true != deleteflags[i])
+    {
+      //what we need to write is vheader + key[i] + value[i]
+      vlogBatchString += vlogstring + keys[i] + values[i];
+    }
+    else
+    {
+      //what we need to write is the vheader + key[i]
+      vlogBatchString += vlogstring + keys[i];
+    }
   }
 
   //write vlog
   VlogFile *p = pvfm->PickVlogFileToWrite(vlogBatchString.size());
   int64_t originalOffset = p->GetTailOffset();
 
-  cout << "original offset is " << originalOffset << endl;
   int ret = p->Write(vlogBatchString);
   if (0 != ret)
   {
@@ -1120,6 +1161,45 @@ int DBOperations::DB_Put(const string &key, const string &value)
     //fixme: should convert return code
     return ret;  
   }
+}
+
+//Delete a key from wisckeydb
+int DBOperations::DB_Delete(const string &key)
+{
+  //wisckeydb reserved keys can not be deleted
+  if (VlogFileManager::IsReservedKey(key))
+    return -1;
+
+  string locator;
+  int ret = pdb->Get(key, locator);
+  if (0 != ret)
+  {
+    //the key does not exists, return 0
+    return 0;
+  }
+
+  //delete from rocksdb
+  pdb->Delete(key);
+
+  SequenceNumber Seq = ++lastOperatedSeq;
+  VlogOndiskEntryHeader vheader(key.size(), 0, Seq);
+  string vlogstring;
+
+  cout << "we are using " << Seq << endl;
+
+  //what we need to write is vheader + key + value
+  //(fixme): it may be very large
+  vheader.encode(vlogstring);
+  vlogstring += key;
+  int64_t needwritesize = sizeof(vheader) + key.size();
+
+  //write vlog
+  VlogFile *p = pvfm->PickVlogFileToWrite(needwritesize);
+  int64_t originalOffset = p->GetTailOffset();
+
+  //cout << "original offset is " << originalOffset << endl;
+  p->Write(vlogstring);
+  return 0;
 }
 
 //reading vlog specified by locator, a locator string can be decoded to EntryLocator
@@ -1520,26 +1600,26 @@ private:
       deleteflags.push_back(false);
     }
     
-    //update half of them
-    for (int i = 0; i < testkeys; i++)
-    {
-      if (i % 2 == 0)
-      {
-        keys.push_back(keys[i]);
-        values.push_back("wuxingyi");
-        deleteflags.push_back(false);
-      }
-    }
+    ////update half of them
+    //for (int i = 0; i < testkeys; i++)
+    //{
+    //  if (i % 2 == 0)
+    //  {
+    //    keys.push_back(keys[i]);
+    //    values.push_back("wuxingyi");
+    //    deleteflags.push_back(false);
+    //  }
+    //}
   
     //delete half of them
     for (int i = 0; i < testkeys; i++)
     {
-      if (i % 2 == 1)
-      {
+      //if (i % 2 == 1)
+      //{
         keys.push_back(keys[i]);
         values.push_back("");
         deleteflags.push_back(true);
-      }
+      //}
     }
   
     DBOperations op;
@@ -1579,6 +1659,30 @@ private:
     op.DB_QueryFrom(key);
   }
 
+  void TEST_writedelete()
+  {
+    DBOperations op;
+    cout << __func__ << ": STARTED" << endl;
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value(num/10000000,'c'); 
+      string key = to_string(num);
+      
+      //cout << "before Put: key is " << key << endl;
+      //cout << "before Put: key is " << key << ", value is " <<  value 
+      //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+      op.DB_Put(key, value);
+      value.clear();
+      op.DB_Delete(key);
+      //cout << "after  Get: key is " << key << ", value is " << value 
+      //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+      cout << "---------------------------------------------------" << endl;
+    }
+    cout << __func__ << ": FINISHED" << endl;
+  }
+
   void TEST_readwrite()
   {
     DBOperations op;
@@ -1596,6 +1700,29 @@ private:
       op.DB_Put(key, value);
       value.clear();
       op.DB_Get(key, value);
+      //cout << "after  Get: key is " << key << ", value is " << value 
+      //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+      cout << "---------------------------------------------------" << endl;
+    }
+    cout << __func__ << ": FINISHED" << endl;
+  }
+
+  void TEST_writeupdate()
+  {
+    DBOperations op;
+    cout << __func__ << ": STARTED" << endl;
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value(num/10000000,'c'); 
+      string key = to_string(num);
+      
+      //cout << "before Put: key is " << key << endl;
+      //cout << "before Put: key is " << key << ", value is " <<  value 
+      //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
+      op.DB_Put(key, value);
+      op.DB_Put(key, value + "hehehe");
       //cout << "after  Get: key is " << key << ", value is " << value 
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
       cout << "---------------------------------------------------" << endl;
@@ -1635,8 +1762,12 @@ private:
 public:
   void run()
   {
-    TEST_readwrite();
-    //TEST_Iterator();
+    //TEST_writedelete();
+    TEST_writeupdate();
+    TEST_Compact();
+    TEST_QueryAll();
+    //TEST_readwrite();
+    //TEST_Batch();
     //TEST_QueryAll();
     //TEST_QueryRange("66", 2);
     //TEST_QueryFrom("66");
@@ -1657,6 +1788,7 @@ int main(int argc, char **argv)
   EnvSetup();
   initPrefetch();
   TEST test(argc, argv);
+  cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
   test.run();
   return 0;
 }
