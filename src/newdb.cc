@@ -146,14 +146,14 @@ public:
 
   void encode(string &outstring)
   {
-    size_t DBSTRUCTSIZE = sizeof(EntryLocator);
-    char p[DBSTRUCTSIZE];
+    size_t LOCATORSIZE = sizeof(EntryLocator);
+    char p[LOCATORSIZE];
 
-    memcpy(p, (char *) this, DBSTRUCTSIZE);
+    memcpy(p, (char *) this, LOCATORSIZE);
     
     //this is ugly, but we cannot use `outstring = p` because p is not
     //necessarily null-terminated.
-    outstring = string(p, DBSTRUCTSIZE);
+    outstring = string(p, LOCATORSIZE);
   }
 
   void decode(const string &instring)
