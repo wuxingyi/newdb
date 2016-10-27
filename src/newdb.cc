@@ -216,11 +216,6 @@ public:
     return tailOffset;
   }
 
-  void AdvanceOffset(int64_t advoffset)
-  {
-    tailOffset += advoffset;
-  }
-
   VlogFile(int seq_)
   {
     filename = kDBVlogBase + to_string(seq_);
@@ -865,7 +860,6 @@ private:
       return 0;
     }
 
-    cout << "offset is " << vlogoffset << endl;
     int64_t keysize, valuesize;
     int fixedsize = sizeof(struct VlogOndiskEntryHeader);
 
@@ -885,8 +879,8 @@ private:
     VlogOndiskEntryHeader vheader(0, 0);
     vheader.decode(kvstring);
 
-    cout << "entry keysize is " << vheader.GetKeySize() << endl;
-    cout << "entry valuesize is " << vheader.GetValueSize() << endl;
+    //cout << "entry keysize is " << vheader.GetKeySize() << endl;
+    //cout << "entry valuesize is " << vheader.GetValueSize() << endl;
   
     //the stack may be not enough, so use head allocated memory
     char *pkey = (char *)malloc(vheader.GetKeySize());
@@ -922,13 +916,13 @@ private:
     }
     else
     {
-      //it's still in the db, but we should judge whether it's a outdated value
       EntryLocator dblocator(0, 0);
       dblocator.decode(locator);
 
       SequenceNumber entrySeq = vheader.GetEntrySeq();
       if (entrySeq < dblocator.GetLocatorSeq())
       {
+        //it's still in the db, but we should judge whether it's a outdated value
         //this is a outdated value, we just skip this entry
         cout << "this is an outdated value, we just skip" << endl;
       }
@@ -961,9 +955,6 @@ private:
 
         ret = pdb->Put(vheaderkey, EntryLocatorString);
         assert(0 == ret);
-
-        //advance the copacted vlog tail
-        destvf->AdvanceOffset(length);
       }
 
       if (vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize() < srcvf->GetTailOffset())
