@@ -37,10 +37,10 @@ if the src vlog has seq range (1, 1000), if a snapshot was captured at
 sequence 888, then it may have value linked to src vlog, so we cannot   
 delete it now.  
 
-a way to fix this is, after compaction, we got the larggest seq of  
-the src vlog src_max_seq(according to our appending machnism, it it always the last  
-entry of the vlog file), compare src_max_seq with seq of all the snapshots exists  
-(s1, s2, sn), if ```src_max_seq < min(s1,s2,sn)``` then the file can safely deleted.  
+a way to fix this is, after compaction, we got the smallest seq of  
+the src vlog src_min_seq(according to our appending machnism, it it always the first   
+entry of the vlog file), compare src_min_seq with seq of all the snapshots exists  
+(s1, s2, sn), if ```src_min_seq > max(s1,s2,sn)``` then the file can safely deleted.  
 else, we should have a callback to dealing with SnapshotRelease event, when any   
-of (s1, s2, sn) is released(for example s1) , we can compare it with min(s2,sn).
+of (s1, s2, sn) is released(for example s1) , we can compare it with max(s2,sn).
 
