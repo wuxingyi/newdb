@@ -66,3 +66,5 @@
    3.mush smaller memory allocation
 49.posix_fadvise() is also used for big value readahead
 50.we don't need to support column family.
+51.drop static variables
+52.clean up the interfaces and do db_bench test
