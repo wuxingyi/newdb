@@ -42,7 +42,7 @@ the src vlog src_min_seq(according to our appending machnism, it it always the f
 entry of the vlog file), compare src_min_seq with seq of all the snapshots exists  
 (s1, s2, sn), if ```src_min_seq > max(s1,s2,sn)``` then the file can safely deleted.  
 else, we should have a callback to dealing with SnapshotRelease event, when any   
-of (s1, s2, sn) is released(for example s1) , we can compare it with max(s2,sn).
+of (s1, s2, sn) is released(for example s1) , we can compare it with max(s2,sn).  
 consider the above example, ```src_min_seq = 1```, while max(s1)=888, so it can  
 not be deleted, actully since src_min_seq is 1, so we can only wait for the 888  
 snapshot delete and no snapshot exists, so max(snapshot) = 0.
