@@ -68,6 +68,34 @@ static map<string, string> prefetchedKV;
 typedef uint64_t SequenceNumber;
 static SequenceNumber lastOperatedSeq = 0;
 
+struct ReadOptions
+{
+  //currently only support snapshot
+  const Snapshot* snapshot;
+  ReadOptions():snapshot(nullptr){}
+};
+
+class Snapshot {
+private:
+  SequenceNumber snapedSeq;//(fixme)SequenceNumber seems not neccessary
+  const rocksdb::Snapshot *snap;
+
+public:
+  //(fixme)currently move out of class to skip compile error
+  Snapshot(SequenceNumber snapedSeq_);
+
+  SequenceNumber GetSnapshotSequence() const
+  { 
+    return snapedSeq;
+  }
+  
+  const rocksdb::Snapshot *GetRocksdbSnap() const
+  {
+    return snap;
+  }
+
+  ~Snapshot();
+};
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntryHeader struct
 struct VlogOndiskEntryHeader
@@ -341,15 +369,30 @@ public:
     assert(s.ok());
   }
 
-  Iterator *NewIterator()
+  Iterator *NewIterator(const ReadOptions& options)
   {
-    return new Iterator(db->NewIterator(rocksdb::ReadOptions()));
+    rocksdb::ReadOptions rrop;
+    
+    if (nullptr != options.snapshot)
+      rrop.snapshot = options.snapshot->GetRocksdbSnap();
+    return new Iterator(db->NewIterator(rrop));
   }
 
   //Iterator is a rocksdb::Iterator wrapper, but sometimes we only need rocksdb::Iterator
-  rocksdb::Iterator *NewRocksdbIterator()
+  rocksdb::Iterator *NewRocksdbIterator(const rocksdb::ReadOptions& options)
   {
-    return db->NewIterator(rocksdb::ReadOptions());
+    return db->NewIterator(options);
+  }
+
+  //Iterator is a rocksdb::Iterator wrapper, but sometimes we only need rocksdb::Iterator
+  const rocksdb::Snapshot *GetRocksdbSnapshot()
+  {
+    return db->GetSnapshot();
+  }
+
+  void ReleaseRocksdbSnapshot(const rocksdb::Snapshot *snap)
+  {
+    return db->ReleaseSnapshot(snap);
   }
 
   ~RocksDBWrapper()
@@ -404,10 +447,12 @@ public:
   }
 
   //wrapper of rocksdb::DB::Get
-  int Get(string key, string &value)
+  int Get(string key, string &value, const rocksdb::Snapshot *snap=nullptr)
   {
+    rocksdb::ReadOptions readop;
+    readop.snapshot = snap;
     // get value
-    rocksdb::Status s = db->Get(rocksdb::ReadOptions(), key, &value);
+    rocksdb::Status s = db->Get(readop, key, &value);
   
     //assert(s.ok());
     if (s.ok())
@@ -438,6 +483,17 @@ public:
     rocksdb::DestroyDB(dbPath, options);
   }
 };
+
+Snapshot::Snapshot(SequenceNumber snapedSeq_):snapedSeq(snapedSeq_)
+{ 
+  snap = pdb->GetRocksdbSnapshot();
+}
+
+Snapshot::~Snapshot()
+{
+  if (nullptr != this->snap)
+    pdb->ReleaseRocksdbSnapshot(this->snap);
+}
 
 //where should we store the prefeched Vlog value?
 //maybe we should use pvfm
@@ -492,7 +548,7 @@ int Iterator::Next()
     if (ShouldTriggerPrefetch())
     {
       cout << __func__ << " :push to prefeching queue" << endl;
-      rocksdb::Iterator *it = pdb->NewRocksdbIterator();
+      rocksdb::Iterator *it = pdb->NewRocksdbIterator(rocksdb::ReadOptions());
       assert (nullptr != it);
 
       //now we have been to the next of dbiter, check it
@@ -1021,6 +1077,20 @@ bool VlogFileManager::IsReservedKey(const string &key)
   return (key == VlogFileManager::vfmWrittingKey || key == VlogFileManager::vfmCompactingKey);
 }
 
+
+//Snapshot is head allocated
+Snapshot* DBOperations::DB_GetSnapshot()
+{
+  return new Snapshot(lastOperatedSeq);
+}
+
+void DBOperations::DB_ReleaseSnapshot(Snapshot *snap)
+{
+  assert(nullptr != snap);
+  delete snap;
+}
+
+
 //interface to deal with user requests
 //doesnot need to provide any data, only provide methods
 //a DBOperations object can execute multiple operations as you wish
@@ -1233,7 +1303,7 @@ int DBOperations::_db_Get(const string &key, const string &locator, string &valu
 
 //retrive @value by @key, if exists, the @value will be read from vlog
 //the key/value maybe have already been prefetched, so we should search it first. 
-int DBOperations::DB_Get(const string &key, string &value)
+int DBOperations::DB_Get(const ReadOptions &rop, const string &key, string &value)
 {
   //wisckeydb reserved keys
   //wisckeydb will NEVER call this function, it directly call Get
@@ -1252,15 +1322,27 @@ int DBOperations::DB_Get(const string &key, string &value)
     cout << "cache miss" << endl;
   }
 
+  const rocksdb::Snapshot *rsnap = nullptr;
+  if (nullptr != rop.snapshot)
+  {
+    rsnap = rop.snapshot->GetRocksdbSnap();
+  }
+
   string locator;
-  int ret = pdb->Get(key, locator);
+  int ret = pdb->Get(key, locator, rsnap);
   if (0 != ret)
     return ret;
 
   EntryLocator el(0, 0);
   el.decode(locator);
-  VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
 
+  //compare locator seq with snapshot seq
+  if (nullptr != rop.snapshot)
+  {
+    assert(el.GetLocatorSeq() <= rop.snapshot->GetSnapshotSequence());
+  }
+
+  VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
   assert(nullptr != vf);
   
   int kvsize = el.GetLength();
@@ -1294,7 +1376,8 @@ int DBOperations::DB_Get(const string &key, string &value)
 //implement range query which is not parallel
 void DBOperations::DB_QueryAll()
 {
-  Iterator* it = pdb->NewIterator();
+  ReadOptions op;
+  Iterator* it = pdb->NewIterator(op);
 
   string value;
   int gotkeys = 0;
@@ -1302,7 +1385,7 @@ void DBOperations::DB_QueryAll()
   //and the metadta key doesnot has a vlog entry.
   for (it->SeekToFirst(); it->Valid(); it->Next()) 
   {
-    int ret = DB_Get(string(it->key().data(), it->key().size()), value);  
+    int ret = DB_Get(ReadOptions(), string(it->key().data(), it->key().size()), value);
     if (0 == ret)
     {
       cout << "key is " << it->key().data() << endl;
@@ -1322,7 +1405,8 @@ void DBOperations::DB_QueryAll()
 //(TODO)should use output paras, not cout
 void DBOperations::DB_ParallelQuery()
 {
-  Iterator* it = pdb->NewIterator();
+  ReadOptions op;
+  Iterator* it = pdb->NewIterator(op);
 
   //TODO(wuxingyi): use workqueue here
   std::vector<std::thread> workers;
@@ -1347,14 +1431,15 @@ void DBOperations::DB_ParallelQuery()
 void DBOperations::DB_QueryFrom(const string &key)
 {
   cout << __func__ << endl;
-  Iterator* it = pdb->NewIterator();
+  ReadOptions op;
+  Iterator* it = pdb->NewIterator(op);
 
   string value;
   //note that rocksdb is also used by wisckeydb to store vlog file metadata,
   //and the metadta key doesnot has a vlog entry.
   for (it->Seek(key); it->Valid(); it->Next()) 
   {
-    int ret = DB_Get(string(it->key().data(), it->key().size()), value);  
+    int ret = DB_Get(ReadOptions(), string(it->key().data(), it->key().size()), value);  
     if (0 == ret)
     {
       cout << "key is " << it->key().data() << endl;
@@ -1366,9 +1451,9 @@ void DBOperations::DB_QueryFrom(const string &key)
   delete it;
 }
 
-Iterator *DBOperations::DB_GetIterator()
+Iterator *DBOperations::DB_GetIterator(const ReadOptions &options)
 {
-  return pdb->NewIterator();
+  return pdb->NewIterator(options);
 }
 
 //query from key, at most limit entries
@@ -1376,7 +1461,8 @@ Iterator *DBOperations::DB_GetIterator()
 void DBOperations::DB_QueryRange(const string &key, int limit)
 {
   cout << __func__ << endl;
-  Iterator* it = pdb->NewIterator();
+  ReadOptions op;
+  Iterator* it = pdb->NewIterator(op);
 
   string value;
   int queriedKeys = 0;
@@ -1384,7 +1470,7 @@ void DBOperations::DB_QueryRange(const string &key, int limit)
   //and the metadta key doesnot has a vlog entry.
   for (it->Seek(key); it->Valid() && queriedKeys < limit; it->Next()) 
   {
-    int ret = DB_Get(string(it->key().data(), it->key().size()), value);  
+    int ret = DB_Get(ReadOptions(), string(it->key().data(), it->key().size()), value);  
     if (0 == ret)
     {
       cout << "key is " << it->key().data() << endl;
@@ -1690,13 +1776,91 @@ private:
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
       op.DB_Put(key, value);
       value.clear();
-      op.DB_Get(key, value);
+      op.DB_Get(ReadOptions(), key, value);
       //cout << "after  Get: key is " << key << ", value is " << value 
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
       cout << "---------------------------------------------------" << endl;
     }
     cout << __func__ << ": FINISHED" << endl;
   }
+
+  void TEST_SnapshotedIteration()
+  {
+    cout << __func__ << ": STARTED" << endl;
+    DBOperations op;
+
+    //first we write some data to db
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value(num/100000000,'c'); 
+      string key = to_string(num);
+      op.DB_Put(key, value);
+    }
+
+    cout << "we have put " << testkeys << " keys to db " << endl;
+
+    ReadOptions rop;
+    Snapshot *snapshot1 = op.DB_GetSnapshot();
+    rop.snapshot = snapshot1;
+    Iterator *it = op.DB_GetIterator(rop);
+    it->SeekToFirst();
+  
+    string value;
+    int gotkeys = 0;
+
+    cout << "put another key after getting iterator, no db have " 
+         << testkeys + 1  << " keys" << endl;
+    op.DB_Put("wuxingyi", "hehehe");
+    while(it->Valid())
+    {
+      int ret = op.DB_Get(rop, string(it->key().data(), it->key().size()), value);  
+      if (0 == ret)
+      {
+        cout << "key is " << it->key().data() << endl;
+        cout << "value is " << value << endl;
+        
+        //reserved keys are not count
+        ++gotkeys;
+      }
+      it->Next();
+    }
+
+    delete it;
+    cout << __func__ << " we got "  << gotkeys <<endl;
+    cout << __func__ << ": FINISHED" << endl;
+  }
+
+  void TEST_SnapshotGet()
+  {
+    DBOperations op;
+    cout << __func__ << ": STARTED" << endl;
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value(num/100000000,'c'); 
+      string key = to_string(num);
+      
+      cout << "before Put: key is " << key << ", value is " <<  value  << endl;
+      
+      op.DB_Put(key, value);
+      ReadOptions rop;
+      Snapshot *snap = op.DB_GetSnapshot();
+      rop.snapshot = snap;
+      op.DB_Put(key, value + "hehehe");
+      op.DB_Get(ReadOptions(), key, value);
+      
+      cout << "normal Get: key is " << key << ", value is " << value  << endl;
+      op.DB_Get(rop, key, value);
+      
+      cout << "snapshotted Get: key is " << key << ", value is " << value  << endl;
+      cout << "---------------------------------------------------" << endl;
+      op.DB_ReleaseSnapshot(snap);
+    }
+    cout << __func__ << ": FINISHED" << endl;
+  } 
 
   void TEST_writeupdate()
   {
@@ -1725,7 +1889,8 @@ private:
   {
     DBOperations op;
     cout << __func__ << ": STARTED" << endl;
-    Iterator *it = op.DB_GetIterator();
+    ReadOptions rop;
+    Iterator *it = op.DB_GetIterator(rop);
     cout << it->Valid() << endl;
     it->SeekToFirst();
   
@@ -1733,7 +1898,7 @@ private:
     int gotkeys = 0;
     while(it->Valid())
     {
-      int ret = op.DB_Get(string(it->key().data(), it->key().size()), value);  
+      int ret = op.DB_Get(ReadOptions(), string(it->key().data(), it->key().size()), value);  
       if (0 == ret)
       {
         //cout << "key is " << it->key().data() << endl;
@@ -1753,9 +1918,11 @@ private:
 public:
   void run()
   {
+    //TEST_SnapshotGet();
+    TEST_SnapshotedIteration();
     //TEST_writedelete();
-    TEST_writeupdate();
-    TEST_Compact();
+    //TEST_writeupdate();
+    //TEST_Compact();
     TEST_QueryAll();
     //TEST_readwrite();
     //TEST_Batch();

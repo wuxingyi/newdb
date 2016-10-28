@@ -45,6 +45,8 @@ public:
 //interface to deal with user requests
 //doesnot need to provide any data, only provide methods
 //a DBOperations object can execute multiple operations as you wish
+class ReadOptions;
+class Snapshot;
 class DBOperations
 {
 public:
@@ -63,14 +65,19 @@ public:
   //delete a key
   int DB_Delete(const string &key);
 
+  Snapshot* DB_GetSnapshot();
+  void DB_ReleaseSnapshot(Snapshot *snap);
+
 protected:
   //reading vlog specified by locator, a locator string can be decoded to EntryLocator
   //key is helpful to and is also available, so it's cheap.
   int _db_Get(const string &key, const string &locator, string &value);
 public:
+  //(fixme)Snapshot currently not compataible with rocksdb
+  //snap is a 
   //retrive @value by @key, if exists, the @value will be read from vlog
   //the key/value maybe have already been prefetched, so we should search it first. 
-  int DB_Get(const string &key, string &value);
+  int DB_Get(const ReadOptions &rop, const string &key, string &value);
 
   //implement parallel range query
   //(TODO)should use output paras, not cout
@@ -80,7 +87,7 @@ public:
   //we implement readahead here to accelarate vlog reading
   void DB_QueryFrom(const string &key);
 
-  Iterator *DB_GetIterator();
+  Iterator *DB_GetIterator(const ReadOptions &options);
 
   //query from key, at most limit entries
   //note: this interface is not for users, plz use DB_QueryFrom
