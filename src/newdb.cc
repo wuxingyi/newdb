@@ -55,8 +55,10 @@ int testkeys = 10;
 
 class VlogFileManager;
 class RocksDBWrapper;
+class SnapshotManager;
 static VlogFileManager *pvfm = nullptr;
 static RocksDBWrapper *pdb = nullptr;
+static SnapshotManager *pssm = nullptr;
 static deque<rocksdb::Iterator *> dbprefetchQ;
 static deque<map<string, string>> vlogprefetchQ;
 static std::condition_variable db_prefetchCond;
@@ -100,6 +102,49 @@ public:
 
   ~Snapshot();
 };
+
+//manager the snapshots
+class SnapshotManager
+{
+private:
+  SequenceNumber maxSeq = 0;
+  int snapshotCount = 0;
+
+public:
+  SequenceNumber GetMaxSnapshotSeq()
+  {
+    return maxSeq;
+  }
+
+  void SetMaxSnapshotSeq(SequenceNumber maxSeq_)
+  {
+    maxSeq = maxSeq_;
+  }
+
+  //am i the max seq?
+  bool IsMaxSeq(SequenceNumber myseq)
+  {
+    return myseq == maxSeq;
+  }
+
+  void IncreCount()
+  {
+    ++snapshotCount;
+  }
+
+  void DecreCount()
+  {
+    if (snapshotCount > 0)
+    {
+      --snapshotCount;
+    }
+  }
+  int GetSnapshotCount()
+  {
+    return snapshotCount;
+  }
+};
+
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntryHeader struct
 struct VlogOndiskEntryHeader
@@ -618,10 +663,20 @@ struct VlogFileManager
 private:
   map<int, VlogFile *> allfiles; //heap allocated
   int currentSeq = 0;            //seq for causual vlog files
-  int availCompactingSeq = 1;            //seq for compacting vlog files
+  int availCompactingSeq = 1;    //seq for compacting vlog files
+  map<int,int> filestodelete;    //(fixme)persist it to rocksdb, delete when startup
 public:
   static const string vfmWrittingKey ;
   static const string vfmCompactingKey ;
+
+public:
+  void DeleteFiles()
+  {
+    for (auto i:filestodelete)
+    {
+      RemoveVlogFile(i.first);
+    }
+  }
 
 private:
   //whether a vlog file with @filename exists
@@ -902,6 +957,14 @@ public:
   }
 
 private:
+  bool shouldDelete()
+  {
+    //no snapshots, delete it right now
+    if (0 == pssm->GetSnapshotCount())
+      return true;
+    return false;
+  }
+  
   //compact the vlog with (srcseq, vlogoffset) to destseq 
   //(fixme)make sure newseq VlogFile is create and put to allfiles vector
   int compactToNewVlog(int srcseq, int destseq, int64_t vlogoffset)
@@ -969,9 +1032,15 @@ private:
       }
       else
       {
-        //all items has been compacted
-        //(fixme) cannot delete vlog file here, manage all vlog files
-        RemoveVlogFile(srcseq);
+        if (true == shouldDelete())
+        {
+          //all items has been compacted and this vlog is not referenced.
+          RemoveVlogFile(srcseq);
+        }
+        else
+        {
+          filestodelete.insert(make_pair(srcseq, srcseq));
+        }
       }
     }
     else
@@ -1025,7 +1094,14 @@ private:
       else
       {
         //all items has been compacted
-        RemoveVlogFile(srcseq);
+        if (true == shouldDelete())
+        {
+          RemoveVlogFile(srcseq);
+        }
+        else
+        {
+          filestodelete.insert(make_pair(srcseq, srcseq));
+        }
       }
     }
   }
@@ -1040,7 +1116,7 @@ public:
     {
       //no key is found, so this is no vlog files
       availCompactingSeq = 1;
-      cout << "compacting seq is " << sseq << endl;
+      cout << "compacting seq is " << availCompactingSeq << endl;
     }
     else
     {
@@ -1085,12 +1161,24 @@ bool VlogFileManager::IsReservedKey(const string &key)
 //Snapshot is head allocated
 Snapshot* DBOperations::DB_GetSnapshot()
 {
+  pssm->IncreCount();
+  pssm->SetMaxSnapshotSeq(lastOperatedSeq);
   return new Snapshot(lastOperatedSeq);
 }
 
 void DBOperations::DB_ReleaseSnapshot(Snapshot *snap)
 {
   assert(nullptr != snap);
+  pssm->DecreCount();
+
+  if ((pssm->IsMaxSeq(snap->GetSnapshotSequence())) &&
+      (pssm->GetSnapshotCount() == 0))
+  {
+    //we can delete all the files need to be deleted now
+    //if ()  
+    cout << "deleting all files right now" << endl;
+    pvfm->DeleteFiles();
+  }
   delete snap;
 }
 
@@ -1785,6 +1873,7 @@ private:
       //     << " key length is " << key.size() << ", value length is " << value.size() << endl;
       cout << "---------------------------------------------------" << endl;
     }
+    
     cout << __func__ << ": FINISHED" << endl;
   }
 
@@ -1855,6 +1944,7 @@ private:
       vs.push_back(snap);
     }
 
+    Snapshot *myownsnap = op.DB_GetSnapshot();
     for(int i = 0; i < testkeys; i++)
     {
       string value;
@@ -1867,6 +1957,10 @@ private:
       op.DB_ReleaseSnapshot(vs[i]);
     }
 
+    cout << "file should not be deleted because i own a snapshot " << endl;
+    op.DB_ReleaseSnapshot(myownsnap);
+    cout << "file can be deleted now because i released the snapshot " << endl;
+  
     cout << __func__ << ": FINISHED" << endl;
   } 
 
@@ -1957,12 +2051,13 @@ private:
 public:
   void run()
   {
-    TEST_SnapshotVersionGet();
+    //TEST_SnapshotVersionGet();
     //TEST_SnapshotGet();
     //TEST_SnapshotedIteration();
     //TEST_writedelete();
     //TEST_writeupdate();
-    //TEST_Compact();
+    TEST_readwrite();
+    TEST_Compact();
     //TEST_QueryAll();
     //TEST_readwrite();
     //TEST_Batch();
@@ -1977,6 +2072,7 @@ void EnvSetup()
   //pdb and pvfm is globally visible
   pdb = new RocksDBWrapper(kDBPath); 
   pvfm = new VlogFileManager();
+  pssm = new SnapshotManager();
   assert(nullptr != pdb);
   assert(nullptr != pvfm);
 }
