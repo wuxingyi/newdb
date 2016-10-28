@@ -66,6 +66,10 @@ static std::mutex vlog_prefetchLock;
 static map<string, string> prefetchedKV;
 
 typedef uint64_t SequenceNumber;
+
+//(fixme)this is a naive implemetion to support snapshot,
+//we should have better machnism to manage compacted vlogfiles 
+//and also keep snapshoted iterators can fetch the outdated value.
 static SequenceNumber lastOperatedSeq = 0;
 
 struct ReadOptions
@@ -1812,7 +1816,7 @@ private:
 
     cout << "put another key after getting iterator, no db have " 
          << testkeys + 1  << " keys" << endl;
-    op.DB_Put("wuxingyi", "hehehe");
+    op.DB_Put("test", "hehehe");
     while(it->Valid())
     {
       int ret = op.DB_Get(rop, string(it->key().data(), it->key().size()), value);  
@@ -1831,6 +1835,40 @@ private:
     cout << __func__ << " we got "  << gotkeys <<endl;
     cout << __func__ << ": FINISHED" << endl;
   }
+
+  void TEST_SnapshotVersionGet()
+  {
+    DBOperations op;
+    cout << __func__ << ": STARTED" << endl;
+    int num = rand();
+    string key = to_string(num);
+    vector<Snapshot*> vs;
+
+    //put testkeys versions of key
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value("testhehehe" + to_string(i)); 
+      op.DB_Put(key, value);
+      Snapshot *snap = op.DB_GetSnapshot();
+      vs.push_back(snap);
+    }
+
+    for(int i = 0; i < testkeys; i++)
+    {
+      string value;
+      ReadOptions rop;
+      rop.snapshot = vs[i];
+
+      op.DB_Get(rop, key, value);
+      
+      cout << "snapshotted version Get: key is " << key << ", value is " << value  << endl;
+      op.DB_ReleaseSnapshot(vs[i]);
+    }
+
+    cout << __func__ << ": FINISHED" << endl;
+  } 
 
   void TEST_SnapshotGet()
   {
@@ -1859,6 +1897,7 @@ private:
       cout << "---------------------------------------------------" << endl;
       op.DB_ReleaseSnapshot(snap);
     }
+
     cout << __func__ << ": FINISHED" << endl;
   } 
 
@@ -1918,12 +1957,13 @@ private:
 public:
   void run()
   {
+    TEST_SnapshotVersionGet();
     //TEST_SnapshotGet();
-    TEST_SnapshotedIteration();
+    //TEST_SnapshotedIteration();
     //TEST_writedelete();
     //TEST_writeupdate();
     //TEST_Compact();
-    TEST_QueryAll();
+    //TEST_QueryAll();
     //TEST_readwrite();
     //TEST_Batch();
     //TEST_QueryAll();
