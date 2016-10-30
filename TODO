@@ -66,3 +66,4 @@
    3.mush smaller memory allocation
 49.posix_fadvise() is also used for big value readahead
 50.we don't need to support column family.
+51.should not open vlog file with sync flag, sync it when sync=true
