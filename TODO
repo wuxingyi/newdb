@@ -68,3 +68,4 @@
 50.we don't need to support column family.
 51.drop static variables
 52.clean up the interfaces and do db_bench test
+53.implement MultiGet() API, reads many keys from the same consistent view
