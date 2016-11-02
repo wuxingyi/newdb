@@ -47,3 +47,6 @@ consider the above example, ```src_min_seq = 1```, while max(s1)=888, so it can
 not be deleted, actully since src_min_seq is 1, so we can only wait for the 888  
 snapshot delete and no snapshot exists, so max(snapshot) = 0.
 
+## difference between rocksdb and wisckeydb in snapshot and iterator
+wisckeydb never delete src vlog files if ```src_min_seq > max(s1,s2,sn)``` do not   
+satisfied, while a rocksdb snapshot can delete files.
