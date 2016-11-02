@@ -79,6 +79,8 @@ public:
   //the key/value maybe have already been prefetched, so we should search it first. 
   int DB_Get(const ReadOptions &rop, const string &key, string &value);
 
+  std::vector<int> DB_MultiGet(const ReadOptions &rop, const std::vector<std::string> &keys, std::vector<std::string> &values);
+
   //implement parallel range query
   //(TODO)should use output paras, not cout
   void DB_ParallelQuery();

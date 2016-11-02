@@ -1393,6 +1393,100 @@ int DBOperations::_db_Get(const string &key, const string &locator, string &valu
   return 0;
 }
 
+//implement MultiGet API
+std::vector<int> DBOperations::DB_MultiGet(const ReadOptions &rop, const std::vector<std::string> &keys, 
+                                           std::vector<std::string> &values)
+{
+  //DB_MultiGet should return values from a consistant view
+  //if already provides a snapshot, then we use the original snapshot
+  //else we create a snapshot of current version
+  vector<int> *pstatusVec = new vector<int>();
+  assert(nullptr != pstatusVec);
+
+  const rocksdb::Snapshot *rsnap = nullptr;
+  if (nullptr != rop.snapshot)
+  {
+    rsnap = rop.snapshot->GetRocksdbSnap();
+  }
+  else
+  {
+    rsnap = pdb->GetRocksdbSnapshot();
+  }
+
+  for (int i = 0; i < keys.size(); i++)
+  {
+    //wisckeydb reserved keys
+    //wisckeydb will NEVER call this function, it directly call Get
+    if (VlogFileManager::IsReservedKey(keys[i]))
+    {
+      pstatusVec->push_back(-1);
+      values.push_back("");
+      continue;
+    }
+
+    map<string,string>::iterator mapit = prefetchedKV.find(keys[i]);
+    if (mapit != prefetchedKV.end())
+    {
+      cout << "hit cache here" << endl;
+      pstatusVec->push_back(0);
+      values.push_back(string(mapit->second.data(), mapit->second.size()));
+      continue;
+    }
+    else
+    {
+      cout << "cache miss" << endl;
+    }
+
+    string locator;
+    int ret = pdb->Get(keys[i], locator, rsnap);
+    if (0 != ret)
+    {
+      //(fixme)currently use -2 if not found
+      pstatusVec->push_back(-2);
+      values.push_back("");
+      continue;
+    }
+
+    EntryLocator el(0, 0);
+    el.decode(locator);
+
+    VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
+    assert(nullptr != vf);
+    
+    int kvsize = el.GetLength();
+
+    char p[kvsize];
+    ret = vf->Read(p, kvsize, el.GetOffset());
+    if (0 != ret)
+    {
+      //(fixme)currently use -3 if vlog read error
+      pstatusVec->push_back(-3);
+      values.push_back("");
+      continue;
+    }
+
+    //kvsize = sizeof(VlogOndiskEntryHeader) + keysize + valuesize
+    VlogOndiskEntryHeader *vheader = (VlogOndiskEntryHeader *)p;
+
+    //cout << "db keysize is " << vheader->GetKeySize() << endl;
+    //cout << "keysize is " << key.size() << endl;
+    assert(vheader->GetKeySize() == keys[i].size());
+
+    string readkey, readvalue;
+    readkey = string(p + sizeof(VlogOndiskEntryHeader), keys[i].size());
+    values.push_back(string(p + sizeof(VlogOndiskEntryHeader) + keys[i].size(), vheader->GetValueSize()));
+    pstatusVec->push_back(0);
+
+    if (readkey != keys[i])
+    {
+      cout << "readkey is " << readkey << ", key is " << keys[i] << endl;
+      assert(0);
+    }
+  }
+
+  return *pstatusVec;
+}
+
 //retrive @value by @key, if exists, the @value will be read from vlog
 //the key/value maybe have already been prefetched, so we should search it first. 
 int DBOperations::DB_Get(const ReadOptions &rop, const string &key, string &value)
@@ -2018,6 +2112,42 @@ private:
     cout << __func__ << ": FINISHED" << endl;
   }
 
+  void TEST_MultiGet()
+  {
+    DBOperations op;
+    cout << __func__ << ": STARTED" << endl;
+    vector<string> keys;
+    vector<string> values;
+    vector<int> ret;
+    for(int i = 0; i < testkeys; i++)
+    {
+      cout << "this is the " << i <<"th" << endl;
+      int num = rand();
+      string value(num/10000000,'c'); 
+      string key = to_string(num);
+      keys.push_back(key);
+      
+      op.DB_Put(key, value);
+    }
+
+    keys.push_back("test");
+    ret = op.DB_MultiGet(ReadOptions(), keys, values);
+    
+    for(int i = 0; i < ret.size(); i++)
+    {
+      if(0 == ret[i])
+      {
+        cout << values[i] << endl;
+      }
+      else if (-2 == ret[i])
+      {
+        cout << "key " << keys[i] << " not found" << endl;
+      }
+    }
+    
+    cout << __func__ << ": FINISHED" << endl;
+  }
+
   void TEST_Iterator()
   {
     DBOperations op;
@@ -2051,13 +2181,14 @@ private:
 public:
   void run()
   {
+    TEST_MultiGet();
     //TEST_SnapshotVersionGet();
     //TEST_SnapshotGet();
     //TEST_SnapshotedIteration();
     //TEST_writedelete();
     //TEST_writeupdate();
-    TEST_readwrite();
-    TEST_Compact();
+    //TEST_readwrite();
+    //TEST_Compact();
     //TEST_QueryAll();
     //TEST_readwrite();
     //TEST_Batch();
