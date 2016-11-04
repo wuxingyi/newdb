@@ -70,3 +70,4 @@
 52.clean up the interfaces and do db_bench test
 53.implement MultiGet() API, reads many keys from the same consistent view
 54.should not open vlog file with sync flag, sync it when sync=true
+55.if a compacted vlog file is too small, try to compact it to the end of another vlogfile.
