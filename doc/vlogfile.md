@@ -11,6 +11,7 @@ Even though snapshot is supported by the sequence number idea, deletions does no
 need to record in vlog file, actually deletion do own a sequence number but it is not  
 record in vlog file, the reason is mainly because snapshots have a lifetime, 
 after a daemon crashes or restarts, there is no snapshot in the system. 
+Removing deletion from vlog file also help boost performance.
 We traverse the latest vlog file to get the the lastest sequence, since deletions are  
 not recorded, we may lost some sequence if the operations before crash are deletions,  
 but it does not influence the correctless of the system, since not snapshot is  
