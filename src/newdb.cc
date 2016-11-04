@@ -30,12 +30,12 @@
 
 /*
 VLOG FORMAT
-note that keyszie,valuesize,magic and timestamp is fixed size, always take 40 bytes.
+note that keyszie,valuesize,magic and seqnumber is fixed size.
 definiton of message vlogkeyvalue:
 we set keystring and valuestring as optional because we will decode 
 keysize and valuesize.
 --------------------------------------------------------
-|keysize | valuesize | magic | timestamp | key | value |
+|keysize | valuesize | magic | seqnumber | key | value |
 --------------------------------------------------------
 */
 
@@ -261,9 +261,10 @@ public:
 struct VlogFile
 {
 private:
-  int fd;                  //fd of this vlog file
-  int seq;                 //sequence of this vlog file
-  int64_t tailOffset;      //writable offset of this vlog file
+  int fd;                    //fd of this vlog file
+  int seq;                   //sequence of this vlog file
+  int64_t tailOffset;        //writable offset of this vlog file
+  int64_t compactingOffset;  //compacting offset of this vlog file
   const int64_t maxVlogFileSize = 32*1024*1024; //set a upper bound for vlog file size
   string filename;         //name of this vlog file
   
@@ -293,6 +294,17 @@ public:
     return tailOffset;
   }
 
+  int64_t GetCompactingOffset()
+  {
+    return compactingOffset;
+  }
+
+  void SetCompactingOffset(int64_t offset_)
+  {
+    compactingOffset = offset_;
+    return;
+  }
+
   VlogFile(int seq_)
   {
     filename = kDBVlogBase + to_string(seq_);
@@ -310,6 +322,9 @@ public:
     }  
     tailOffset = fileStat.st_size;
     seq = seq_;
+    
+    //compactingOffset set to -1 when creating
+    compactingOffset = -1;
   }
   
   ~VlogFile()
@@ -910,6 +925,7 @@ private:
     VlogOndiskEntryHeader vheader(0, 0);
     vheader.decode(kvstring);
 
+    cout << "entry seq is " << vheader.GetEntrySeq() << endl;
     cout << "entry keysize is " << vheader.GetKeySize() << endl;
     cout << "entry valuesize is " << vheader.GetValueSize() << endl;
   
@@ -983,11 +999,12 @@ private:
       return 0;
     }
 
+    //set compacting offset
+    srcvf->SetCompactingOffset(vlogoffset);
     int64_t keysize, valuesize;
     int fixedsize = sizeof(struct VlogOndiskEntryHeader);
 
     char p[fixedsize];
-  
     int ret = srcvf->Read(p, fixedsize, vlogoffset);
     if (0 != ret)
     {
@@ -1334,24 +1351,11 @@ int DBOperations::DB_Delete(const string &key)
   //delete from rocksdb
   pdb->Delete(key);
 
+  //a deletion should own a sequence number, but donot nee to record to vlog.
+  //see ../doc/vlogfile.md for more details.
   SequenceNumber Seq = ++lastOperatedSeq;
-  VlogOndiskEntryHeader vheader(key.size(), 0, Seq);
-  string vlogstring;
-
   cout << "we are using " << Seq << endl;
 
-  //what we need to write is vheader + key + value
-  //(fixme): it may be very large
-  vheader.encode(vlogstring);
-  vlogstring += key;
-  int64_t needwritesize = sizeof(vheader) + key.size();
-
-  //write vlog
-  VlogFile *p = pvfm->PickVlogFileToWrite(needwritesize);
-  int64_t originalOffset = p->GetTailOffset();
-
-  //cout << "original offset is " << originalOffset << endl;
-  p->Write(vlogstring);
   return 0;
 }
 
@@ -2181,11 +2185,12 @@ private:
 public:
   void run()
   {
-    TEST_MultiGet();
+    //TEST_MultiGet();
     //TEST_SnapshotVersionGet();
     //TEST_SnapshotGet();
     //TEST_SnapshotedIteration();
-    //TEST_writedelete();
+    TEST_writedelete();
+    TEST_Traverse();
     //TEST_writeupdate();
     //TEST_readwrite();
     //TEST_Compact();
