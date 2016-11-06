@@ -30,8 +30,12 @@ and start compaction from this entries.
 in current implemetnion, we traverse all the existing vlog files to know the  
 compacting status of a vlog file, this help us manage all the vlog files better.  
 
-
-### 3. 
+### 3. how to deal with the compacted vlog file
+we manage a very big compacted vlog file for simplicity, it helps us with less  
+open files. As describled in 1.3, we should do a double compaction to the compacted
+vlog when it has too many outdated keys, however, since a compacted vlog may hold  
+much larger nubmber of entries, the users configuration for triggering compaction   
+should be much bigger.
 
 
 2. when to delete source vlog files?

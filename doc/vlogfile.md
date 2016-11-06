@@ -32,3 +32,9 @@ so the sequence numbers are like:
 ```
 [0, 2, 4, 6, 8]
 ```
+
+## flags
+A vlog file is generated either by normal put operation or by compaction,  
+according to our stratergy, a compacted vlog file can be been compacted again.  
+
+
