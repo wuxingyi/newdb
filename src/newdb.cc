@@ -20,6 +20,7 @@
 #include <vector>
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <time.h>
 #include <mutex>
 #include <condition_variable>
@@ -72,6 +73,12 @@ static deque<int> vlogSeqQ;
 static std::condition_variable vlogCompaction_cond;
 static std::mutex vlogCompactionLock;
 typedef uint64_t SequenceNumber;
+static vector<pthread_t> threadsToJoin;
+
+
+bool stopVlogCompaction = false;
+bool stopVlogPrefetch = false;
+bool stopDbPrefetch = false;
 
 //(fixme)this is a naive implemetion to support snapshot,
 //we should have better machnism to manage compacted vlogfiles 
@@ -1209,30 +1216,29 @@ public:
     
     cout << "start compacting vlog file " << srcseq << endl;
     string sseq;
-    //int ret = pdb->Get(vfmCompactingKey, sseq);  
-    //if (ret != 0)
-    //{
-    //  //no key is found, so this is no vlog files
-    //  availCompactingSeq = 1;
-    //  cout << "compacting seq is " << availCompactingSeq << endl;
-    //}
-    //else
-    //{
-    //  availCompactingSeq = atoi(sseq.c_str());
-    //  cout << "compacting seq is " << availCompactingSeq << endl;
+    int ret = pdb->Get(vfmCompactingKey, sseq);  
+    if (ret != 0)
+    {
+      //no key is found, so this is no vlog files
+      availCompactingSeq = 1;
+      cout << "compacting seq is " << availCompactingSeq << endl;
+    }
+    else
+    {
+      availCompactingSeq = atoi(sseq.c_str());
+      cout << "compacting seq is " << availCompactingSeq << endl;
 
-    //  assert(availCompactingSeq % 2 == 1);
-    //}
-    availCompactingSeq = 1;
+      assert(availCompactingSeq % 2 == 1);
+    }
     VlogFile *vf = new VlogFile(availCompactingSeq); 
     assert(nullptr != vf);
     allfiles.insert(make_pair(availCompactingSeq, vf));
 
     //put seq 1 to rocksdb
-    ///if (1 == availCompactingSeq)
-    ///{
-    ///  pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
-    ///}
+    if (1 == availCompactingSeq)
+    {
+      pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+    }
 
     //we should apply a new VlogFile for compaction
     //maybe we should use a big number seq to avoid seq race condition
@@ -1240,8 +1246,8 @@ public:
 
     //(fixme)after compaction, the file should be closed
     //after compaction, update the availCompactingSeq
-    //availCompactingSeq += 2;
-    //pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+    availCompactingSeq += 2;
+    pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
   }
 };
 
@@ -1446,6 +1452,8 @@ int DBOperations::DB_Delete(const string &key)
     {
       std::unique_lock<std::mutex> l(vlogCompactionLock);
       vlogSeqQ.push_back(vf->GetSeq());
+      
+      cout << "waking up compaction thread " << endl;
       vlogCompaction_cond.notify_one();
     }
   }
@@ -1816,7 +1824,7 @@ void *dbPrefetchThread(void *p)
   std::unique_lock<std::mutex> l(db_prefetchLock);
   while (true)
   {
-    if (dbprefetchQ.empty())
+    if (dbprefetchQ.empty() || stopDbPrefetch)
     {
       cout << __func__ << " sleep" << endl;
       db_prefetchCond.wait(l);
@@ -1824,6 +1832,11 @@ void *dbPrefetchThread(void *p)
     }
     else
     {
+      if (stopDbPrefetch)
+      {
+        break;
+        return NULL;
+      }
       do_db_prefetch();
     }
   }
@@ -1852,7 +1865,7 @@ void *vlogPrefetchThread(void *p)
   std::unique_lock<std::mutex> l(vlog_prefetchLock);
   while (true)
   {
-    if (vlogprefetchQ.empty())
+    if (vlogprefetchQ.empty() || stopVlogPrefetch)
     {
       cout << __func__ << " sleep" << endl;
       vlog_prefetchCond.wait(l);
@@ -1860,15 +1873,20 @@ void *vlogPrefetchThread(void *p)
     }
     else
     {
+      if (true == stopVlogPrefetch)
+      {
+        break;
+        return NULL;
+      }
       do_vlog_prefetch();
     }
   }
   return NULL;
 }
+pthread_t db_prefetch, vlog_prefetch;
 void initPrefetch()
 {
   pthread_attr_t *thread_attr = NULL;
-  pthread_t db_prefetch, vlog_prefetch;
 
   int r = pthread_create(&db_prefetch, thread_attr, dbPrefetchThread, NULL);
   assert(0 == r);
@@ -1877,13 +1895,13 @@ void initPrefetch()
   assert(0 == r);
 }
 
-void *vlogCompaction(void *p)
+void *vlogCompactionThread(void *p)
 {
   cout << __func__ << endl;
   std::unique_lock<std::mutex> l(vlogCompactionLock);
   while (true)
   {
-    if (vlogSeqQ.empty())
+    if (vlogSeqQ.empty() || stopVlogCompaction)
     {
       cout << __func__ << " sleep" << endl;
       vlogCompaction_cond.wait(l);
@@ -1891,23 +1909,50 @@ void *vlogCompaction(void *p)
     }
     else
     {
+      if (true == stopVlogCompaction)
+      {
+        break;
+        return NULL;
+      }
+
+      l.unlock();
       int srcseq = vlogSeqQ.front();
       pvfm->CompactVlog(srcseq, 0);
+      cout << "finshed compacting " << srcseq << endl;
       vlogSeqQ.pop_front();
+      l.lock();
     }
   }
   return NULL;
 }
 
+pthread_t vlog_Compaction;
 void initCompaction()
 {
-  pthread_attr_t *thread_attr = NULL;
-  pthread_t vlogCompactionThread;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
 
-  int r = pthread_create(&vlogCompactionThread, thread_attr, vlogCompaction, NULL);
+  int r = pthread_create(&vlog_Compaction, &attr, vlogCompactionThread, NULL);
   assert(0 == r);
 }
 
+void signalHandler(int signo)
+{
+  cout << "we are processing signal " << signo << endl;
+  stopVlogPrefetch = true;
+  stopDbPrefetch = true;
+  stopVlogCompaction = true;
+  vlogCompaction_cond.notify_one();
+  db_prefetchCond.notify_one();
+  vlog_prefetchCond.notify_one();
+  exit(0);
+}
+
+void initSignal()
+{
+  signal(SIGINT, signalHandler);
+}
 ////this function is used to recover from a crash to make data and 
 ////metadata consistent.
 ////note that we must do checkpoint to scan as less vlog entries as possible.
@@ -2048,7 +2093,7 @@ private:
     for(int i = 0; i < 1; i++)
     {
       //delete all of the keys
-      op.DB_Delete(keys[i]);
+      op.DB_Delete(keys[0]);
     }
     cout << __func__ << ": FINISHED" << endl;
   }
@@ -2366,8 +2411,10 @@ int main(int argc, char **argv)
   EnvSetup();
   initPrefetch();
   initCompaction();
+  initSignal();
   TEST test(argc, argv);
   cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
   test.run();
+  for(;;);
   return 0;
 }
