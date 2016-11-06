@@ -1835,7 +1835,6 @@ void *dbPrefetchThread(void *p)
       if (stopDbPrefetch)
       {
         break;
-        return NULL;
       }
       do_db_prefetch();
     }
@@ -1876,7 +1875,6 @@ void *vlogPrefetchThread(void *p)
       if (true == stopVlogPrefetch)
       {
         break;
-        return NULL;
       }
       do_vlog_prefetch();
     }
@@ -1912,7 +1910,6 @@ void *vlogCompactionThread(void *p)
       if (true == stopVlogCompaction)
       {
         break;
-        return NULL;
       }
 
       l.unlock();
