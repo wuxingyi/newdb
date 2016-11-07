@@ -1179,12 +1179,16 @@ private:
       }
     }
   }
-private:
-  bool shouldCompact(int srcseq)
+public:
+  bool ShouldCompact(int srcseq)
   {
     //put the VlogFile to vector
     VlogFile *srcvf = allfiles[srcseq];
-    assert(nullptr != srcvf);
+    if (nullptr == srcvf)
+    {
+      cout << "this file doesnot exist" << endl;
+      return false;
+    }
     if (srcvf->IsAppenable())
     {
       //this file is still appenable, so we cann't compact it now.
@@ -1209,10 +1213,10 @@ public:
   //(fixme):compation thread also have to access to the db, maybe need locks.
   int CompactVlog(int srcseq, int64_t vlogoffset)
   {
-    if (true != shouldCompact(srcseq))
-    {
-      return -1;
-    }
+    //if (true != ShouldCompact(srcseq))
+    //{
+    //  return -1;
+    //}
     
     cout << "start compacting vlog file " << srcseq << endl;
     string sseq;
@@ -1451,10 +1455,14 @@ int DBOperations::DB_Delete(const string &key)
     //it's time to wake up vlog compaction thread
     {
       std::unique_lock<std::mutex> l(vlogCompactionLock);
-      vlogSeqQ.push_back(vf->GetSeq());
-      
-      cout << "waking up compaction thread " << endl;
-      vlogCompaction_cond.notify_one();
+
+      //maybe others have already compact it 
+      if (pvfm->ShouldCompact(vf->GetSeq()))
+      {
+        vlogSeqQ.push_back(vf->GetSeq());
+        cout << "waking up compaction thread " << endl;
+        vlogCompaction_cond.notify_one();
+      }
     }
   }
   return 0;
@@ -1824,18 +1832,19 @@ void *dbPrefetchThread(void *p)
   std::unique_lock<std::mutex> l(db_prefetchLock);
   while (true)
   {
-    if (dbprefetchQ.empty() || stopDbPrefetch)
+    if (dbprefetchQ.empty())
     {
+      if (stopDbPrefetch)
+      {
+        cout << " quiting " << endl;
+        break;
+      }
       cout << __func__ << " sleep" << endl;
       db_prefetchCond.wait(l);
       cout << __func__ << " wake" << endl;
     }
     else
     {
-      if (stopDbPrefetch)
-      {
-        break;
-      }
       do_db_prefetch();
     }
   }
@@ -1864,18 +1873,19 @@ void *vlogPrefetchThread(void *p)
   std::unique_lock<std::mutex> l(vlog_prefetchLock);
   while (true)
   {
-    if (vlogprefetchQ.empty() || stopVlogPrefetch)
+    if (vlogprefetchQ.empty())
     {
+      if (true == stopVlogPrefetch)
+      {
+        cout << " quiting " << endl;
+        break;
+      }
       cout << __func__ << " sleep" << endl;
       vlog_prefetchCond.wait(l);
       cout << __func__ << " wake" << endl;
     }
     else
     {
-      if (true == stopVlogPrefetch)
-      {
-        break;
-      }
       do_vlog_prefetch();
     }
   }
@@ -1899,19 +1909,19 @@ void *vlogCompactionThread(void *p)
   std::unique_lock<std::mutex> l(vlogCompactionLock);
   while (true)
   {
-    if (vlogSeqQ.empty() || stopVlogCompaction)
+    if (vlogSeqQ.empty())
     {
+      if (true == stopVlogCompaction)
+      {
+        cout << " quiting " << endl;
+        break;
+      }
       cout << __func__ << " sleep" << endl;
       vlogCompaction_cond.wait(l);
       cout << __func__ << " wake" << endl;
     }
     else
     {
-      if (true == stopVlogCompaction)
-      {
-        break;
-      }
-
       l.unlock();
       int srcseq = vlogSeqQ.front();
       pvfm->CompactVlog(srcseq, 0);
@@ -2089,8 +2099,8 @@ private:
 
     for(int i = 0; i < 1; i++)
     {
-      //delete all of the keys
-      op.DB_Delete(keys[0]);
+      //remove all but the last
+      op.DB_Delete(keys[i]);
     }
     cout << __func__ << ": FINISHED" << endl;
   }
@@ -2411,7 +2421,14 @@ int main(int argc, char **argv)
   initSignal();
   TEST test(argc, argv);
   cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
-  test.run();
-  for(;;);
+  for(int i = 0; i < 1000; i++)
+  {
+    test.run();
+  }
+
+  //wait a second to finish the last compaction
+  sleep(1);
+  signalHandler(2);
+  
   return 0;
 }
