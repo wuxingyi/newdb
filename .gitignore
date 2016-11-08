@@ -1,3 +1,5 @@
 newdb
 .exrc
 src/DBDATA/*
+test/testall
+test/DBDATA
