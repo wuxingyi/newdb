@@ -9,11 +9,38 @@
 // set sw=2
 // set smarttab
 using namespace std;
+class DB
+{
+public:
+  void open();
+};
 
 //where should we store the prefeched Vlog value?
 //maybe we should use pvfm
 //Only iterator operations cause prefechting,
 
+typedef uint64_t SequenceNumber;
+class Snapshot {
+private:
+  SequenceNumber snapedSeq;//(fixme)SequenceNumber seems not neccessary
+  const rocksdb::Snapshot *snap;
+
+public:
+  //(fixme)currently move out of class to skip compile error
+  Snapshot(SequenceNumber snapedSeq_);
+
+  SequenceNumber GetSnapshotSequence() const;
+  
+  const rocksdb::Snapshot *GetRocksdbSnap() const;
+
+  ~Snapshot();
+};
+struct ReadOptions
+{
+  //currently only support snapshot
+  const Snapshot* snapshot;
+  ReadOptions():snapshot(nullptr){}
+};
 //wrapper of rocksdb::Iterator
 class Iterator
 {
@@ -96,3 +123,4 @@ public:
   void DB_QueryRange(const string &key, int limit);
   void DB_QueryAll();
 };
+

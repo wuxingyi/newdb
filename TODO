@@ -1,19 +1,19 @@
 1.update proto definiton: put key to vlog
 2.optimize write db and write vlog
 3.implement vlog compact (DONE)
-4.write more vlog files 
+4.write more vlog files (DONE)
 5.compatible with rocksdb interfaces
 6.implement delete key (DONE)
-7.add batch api
+7.add batch api (DONE)
 8.add interface to manage vlog entries
 9.protobuf is really buggy, drop it (DONE)
-10.implement range query
+10.implement range query (DONE)
 11.replace fopen/fwrite with open/write (DONE)
 12.free resources is not handled (DONE)
-13.write vlog first, then write to rocksdb
+13.write vlog first, then write to rocksdb (DONE)
 14.write db checkpoint/recovery 
 15.it seems better to make vlogs sorted.
-16.for batch writes, how can we determine the offset to the vlogfile? if single writer, this's not a problem.
+16.for batch writes, how can we determine the offset to the vlogfile? if single writer, this's not a problem. (single write of a vlog)
 17.create threads for read/write.
 18.reduce memory copy
 19.direct IO allign
