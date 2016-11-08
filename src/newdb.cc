@@ -467,23 +467,79 @@ class RocksDBWrapper
 private:
   string dbPath;
   rocksdb::DB* db = nullptr;
+  rocksdb::ColumnFamilyHandle *reservedcf = nullptr;
 public:
   RocksDBWrapper(const string &path):dbPath(path)
   {
     int ret = mkdir(dbPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 
-    rocksdb::Options options;
-    // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
-    options.IncreaseParallelism();
-    options.OptimizeLevelStyleCompaction();
-    // create the DB if it's not already present
-    options.create_if_missing = true;
-    options.compression = rocksdb::kNoCompression;
+    vector<string> existing_column_families;
+    rocksdb::Status s = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path,
+                                               &existing_column_families);  
+    if (!s.ok())
+    {
+      rocksdb::Options options;
+      options.create_if_missing = true;
+      rocksdb::DB* tempdb;
+      rocksdb::Status s = rocksdb::DB::Open(options, kDBPath, &tempdb);
+      assert(s.ok());
 
+      // create column family
+      rocksdb::ColumnFamilyHandle* cf;
+      s = tempdb->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), "wisckeydbreserved", &cf);
+      assert(s.ok());
+      delete cf;
+      delete tempdb;
+    }
+    else
+    {
+      bool found = false;
+      for (auto i:existing_column_families)  
+      {
+        if (i == "wisckeydbreserved")
+        {
+          found = true;
+          break;
+        }
+      }
+      if (false == found)
+      {
+        rocksdb::Options options;
+        options.create_if_missing = true;
+        rocksdb::DB* tempdb;
+        rocksdb::Status s = rocksdb::DB::Open(options, kDBPath, &tempdb);
+        cout << s.ToString() << endl;
+        assert(s.ok());
+
+        // create column family
+        rocksdb::ColumnFamilyHandle* cf;
+        s = tempdb->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), "wisckeydbreserved", &cf);
+        assert(s.ok());
+        delete cf;
+        delete tempdb;
+      }
+    }
+
+    //the db is not exist, create wisckeydbreserved columnfamily and open it
+    rocksdb::Options options2;
+    // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+    options2.IncreaseParallelism();
+    options2.OptimizeLevelStyleCompaction();
+    // create the DB if it's not already present
+    options2.create_if_missing = true;
+    options2.compression = rocksdb::kNoCompression;
+
+    std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
     // open DB
-    rocksdb::Status s = rocksdb::DB::Open(options, dbPath, &db);
-    cout << s.ToString() << endl;
+    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+        rocksdb::kDefaultColumnFamilyName, rocksdb::ColumnFamilyOptions()));
+    // open the new one, too
+    column_families.push_back(rocksdb::ColumnFamilyDescriptor(
+        "wisckeydbreserved", rocksdb::ColumnFamilyOptions()));
+    std::vector<rocksdb::ColumnFamilyHandle*> handles;
+    s = rocksdb::DB::Open(rocksdb::DBOptions(), kDBPath, column_families, &handles, &db);
     assert(s.ok());
+    reservedcf = handles[1];
   }
 
   Iterator *NewIterator(const ReadOptions& options)
@@ -533,6 +589,19 @@ public:
     return -1;
   }
 
+  int ReservedPut(const string key, const string &value)
+  {
+    rocksdb::WriteOptions woptions;
+    woptions.sync = true;
+  
+    rocksdb::Status s = db->Put(woptions,  reservedcf, key, value);
+  
+    assert(s.ok());
+    if (s.ok())
+      return 0;
+  
+    return -1;
+  }
   //wrapper of rocksdb::DB::Write
   int BatchPut(rocksdb::WriteBatch &batch)
   {
@@ -578,6 +647,19 @@ public:
     return -1;
   }
 
+  int ReservedGet(string key, string &value, const rocksdb::Snapshot *snap=nullptr)
+  {
+    rocksdb::ReadOptions readop;
+    readop.snapshot = snap;
+    // get value
+    rocksdb::Status s = db->Get(readop, reservedcf, key, &value);
+  
+    //assert(s.ok());
+    if (s.ok())
+      return 0;
+  
+    return -1;
+  }
   //wrapper of rocksdb::DB::Delete
   int Delete(string key)
   {
@@ -761,10 +843,10 @@ private:
   bool vfminit()
   {
     string seqstring;
-    int ret = pdb->Get(vfmWrittingKey, seqstring);  
+    int ret = pdb->ReservedGet(vfmWrittingKey, seqstring);  
     if (ret != 0)
     {
-      //no key is found, so this is no vlog files
+      //no key is found, so there is no vlog files
       currentSeq = 0;
       cout << "current seq is " << currentSeq << endl;
     }
@@ -785,7 +867,7 @@ private:
     //put seq 0 to rocksdb
     if (0 == currentSeq)
     {
-      pdb->SyncPut(VlogFileManager::vfmWrittingKey, to_string(currentSeq));
+      pdb->ReservedPut(VlogFileManager::vfmWrittingKey, to_string(currentSeq));
     }
 
     if (0 < vf->GetTailOffset())
@@ -794,25 +876,7 @@ private:
       cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
     }
 
-    //maybe the biggest Seq is in the compacted vlog
-    string cseqstring;
-    ret = pdb->Get(vfmCompactingKey, cseqstring);  
-    if (0 == ret)
-    {
-      int64_t seq = atoi(cseqstring.c_str()) - 2;
-
-      assert(seq % 2 == 1);
-      //put the VlogFile to vector
-      VlogFile *vf = new VlogFile(seq); 
-      assert(nullptr != vf);
-
-      allfiles.insert(make_pair(seq, vf));
-      if (0 < vf->GetTailOffset())
-      {
-        lastOperatedSeq = this->getLatestSeq(vf->GetSeq(), 0);
-        cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
-      }
-    }
+    //actually the biggest Seq is impossible in the compacted vlog
   }
 
 public:
@@ -821,7 +885,6 @@ public:
   {
     vfminit();
   }
-  static bool IsReservedKey(const string &key);
 
   //whether there is enough space to write
   VlogFile *PickVlogFileToWrite(size_t size)
@@ -836,7 +899,7 @@ public:
       currentSeq += 2;
       VlogFile *vf = new VlogFile(currentSeq); 
       allfiles.insert(make_pair(currentSeq, vf));
-      pdb->SyncPut(vfmWrittingKey, to_string(currentSeq));
+      pdb->ReservedPut(vfmWrittingKey, to_string(currentSeq));
     }
 
     return allfiles[currentSeq];
@@ -1048,6 +1111,10 @@ private:
       assert(0);
       return -1;
     }
+    else
+    {
+      cout << "compacting from " << srcseq << " to " << destseq << endl;
+    }
 
     VlogFile *srcvf = allfiles[srcseq];
     if (vlogoffset >= srcvf->GetTailOffset())
@@ -1213,14 +1280,9 @@ public:
   //(fixme):compation thread also have to access to the db, maybe need locks.
   int CompactVlog(int srcseq, int64_t vlogoffset)
   {
-    //if (true != ShouldCompact(srcseq))
-    //{
-    //  return -1;
-    //}
-    
     cout << "start compacting vlog file " << srcseq << endl;
     string sseq;
-    int ret = pdb->Get(vfmCompactingKey, sseq);  
+    int ret = pdb->ReservedGet(vfmCompactingKey, sseq);  
     if (ret != 0)
     {
       //no key is found, so this is no vlog files
@@ -1241,7 +1303,7 @@ public:
     //put seq 1 to rocksdb
     if (1 == availCompactingSeq)
     {
-      pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+      pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
     }
 
     //we should apply a new VlogFile for compaction
@@ -1251,17 +1313,13 @@ public:
     //(fixme)after compaction, the file should be closed
     //after compaction, update the availCompactingSeq
     availCompactingSeq += 2;
-    pdb->SyncPut(vfmCompactingKey, to_string(availCompactingSeq));
+    pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
   }
 };
 
 //those two keys are reserved by wisckeydb
 const string VlogFileManager::vfmWrittingKey = "WISCKEYDB:VlogFileManagerWritingSeq";
 const string VlogFileManager::vfmCompactingKey = "WISCKEYDB:VlogFileManagerCompactingSeq";
-bool VlogFileManager::IsReservedKey(const string &key)
-{
-  return (key == VlogFileManager::vfmWrittingKey || key == VlogFileManager::vfmCompactingKey);
-}
 
 
 //Snapshot is head allocated
@@ -1425,10 +1483,6 @@ int DBOperations::DB_Put(const string &key, const string &value)
 //Delete a key from wisckeydb
 int DBOperations::DB_Delete(const string &key)
 {
-  //wisckeydb reserved keys can not be deleted
-  if (VlogFileManager::IsReservedKey(key))
-    return -1;
-
   string locator;
   int ret = pdb->Get(key, locator);
   if (0 != ret)
@@ -1528,15 +1582,6 @@ std::vector<int> DBOperations::DB_MultiGet(const ReadOptions &rop, const std::ve
 
   for (int i = 0; i < keys.size(); i++)
   {
-    //wisckeydb reserved keys
-    //wisckeydb will NEVER call this function, it directly call Get
-    if (VlogFileManager::IsReservedKey(keys[i]))
-    {
-      pstatusVec->push_back(-1);
-      values.push_back("");
-      continue;
-    }
-
     map<string,string>::iterator mapit = prefetchedKV.find(keys[i]);
     if (mapit != prefetchedKV.end())
     {
@@ -1604,11 +1649,6 @@ std::vector<int> DBOperations::DB_MultiGet(const ReadOptions &rop, const std::ve
 //the key/value maybe have already been prefetched, so we should search it first. 
 int DBOperations::DB_Get(const ReadOptions &rop, const string &key, string &value)
 {
-  //wisckeydb reserved keys
-  //wisckeydb will NEVER call this function, it directly call Get
-  if (VlogFileManager::IsReservedKey(key))
-    return -1;
-
   map<string,string>::iterator mapit = prefetchedKV.find(key);
   if (mapit != prefetchedKV.end())
   {
@@ -1856,13 +1896,10 @@ void do_vlog_prefetch()
   map<string, string> prefectedKV = vlogprefetchQ.front();
   for (auto i:prefectedKV)
   {
-    if (false == VlogFileManager::IsReservedKey(i.first))
-    {
-      string value;
-      InternalDBOperations  iop; 
-      iop.DB_Get(i.first, i.second, value);
-      prefetchedKV.insert(make_pair(i.first, value));
-    }
+    string value;
+    InternalDBOperations  iop; 
+    iop.DB_Get(i.first, i.second, value);
+    prefetchedKV.insert(make_pair(i.first, value));
   }
   vlogprefetchQ.pop_front();
 }
@@ -2421,7 +2458,7 @@ int main(int argc, char **argv)
   initSignal();
   TEST test(argc, argv);
   cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
-  for(int i = 0; i < 1000; i++)
+  for(int i = 0; i < 1; i++)
   {
     test.run();
   }
