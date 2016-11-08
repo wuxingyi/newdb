@@ -414,20 +414,20 @@ private:
 public:
   void run()
   {
-    TEST_MultiGet();
-    TEST_SnapshotVersionGet();
-    TEST_SnapshotGet();
-    TEST_SnapshotedIteration();
-    TEST_writedelete();
-    TEST_writeupdate();
-    TEST_readwrite();
+    //TEST_MultiGet();
+    //TEST_SnapshotVersionGet();
+    //TEST_SnapshotGet();
+    //TEST_SnapshotedIteration();
+    //TEST_writedelete();
+    //TEST_writeupdate();
+    //TEST_readwrite();
     TEST_ConditionalCompact();
-    TEST_QueryAll();
-    TEST_readwrite();
-    TEST_Batch();
-    TEST_QueryAll();
-    TEST_QueryRange("66", 2);
-    TEST_QueryFrom("66");
+    //TEST_QueryAll();
+    //TEST_readwrite();
+    //TEST_Batch();
+    //TEST_QueryAll();
+    //TEST_QueryRange("66", 2);
+    //TEST_QueryFrom("66");
   }
 };
 
@@ -437,9 +437,10 @@ int main(int argc, char **argv)
   DB db;
   db.open();
   TEST test(argc, argv);
-  for(int i = 0; i < 1; i++)
+  for(int i = 0; i < 10; i++)
   {
     test.run();
   }
+  sleep(1);
   return 0;
 }

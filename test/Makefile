@@ -15,4 +15,4 @@ testall: testall.cc
 	$(CXX) $(CXXFLAGS) $@.cc ../src/newdb.cc -g -o$@ ../../librocksdb.a -lboost_program_options -I../include -I../../include -O0 -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 clean:
-	rm -rf ./testall ../src/newdb
+	rm -rf ./testall
