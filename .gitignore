@@ -1,5 +1,4 @@
-newdb
 .exrc
-src/DBDATA/*
+lib/DBDATA/*
 test/testall
 test/DBDATA
