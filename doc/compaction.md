@@ -27,8 +27,27 @@ compaction may be interrupted by crash, in such case, the src vlog file and dest
 vlog file are both exist, since we never delete src vlog before compaction has  
 completely been finished, we can add a field to record the compacting offset  
 and start compaction from this entries.  
-in current implemetnion, we traverse all the existing vlog files to know the  
-compacting status of a vlog file, this help us manage all the vlog files better.  
+in current implemetnion, we record the compaction status at the head of the vlog  
+file, using the format(struct CompactionHeader) :  
+
+```
+| magic | srcseq | destseq | compactingflag | 
+```
+when creating a new vlog file for append, ```compactingflag``` is set to ```false```,    
+but at the begining of compaction, we set ```compactingflag``` to ```true```, iff  
+the compaction is completed do we set it back to ```false```, so after restarting  
+from crash, a read the first block of a vlog file and get the compactingflag, if  
+it is ```true```, then we know the crash interrupted the compaction.  
+
+we must record ```srcseq``` and ```destseq``` when compaction, when created,  
+the are both ```-1```, when compacting, the ```srcseq``` of the src vlog file is  
+set as the seq of the src vlog file, and the ```destseq``` of the dest vlog  
+file is set as the seq of the dest vlog file. if the dest vlog file contains a 
+
+after crash, we read the struct CompactionHeader and find src and dest vlog files,  
+then we traverse to the last entry of the the dest vlog file and get the (key, sequence)  
+pair, the we traverse the src vlog file and find the same entry, and start compaction  
+from this entry. by doing this, we can avoid the cost of reading from rocksdb. 
 
 ### 3. how to deal with the compacted vlog file
 we manage a very big compacted vlog file for simplicity, it helps us with less  
@@ -36,7 +55,6 @@ open files. As describled in 1.3, we should do a double compaction to the compac
 vlog when it has too many outdated keys, however, since a compacted vlog may hold  
 much larger nubmber of entries, the users configuration for triggering compaction   
 should be much bigger.
-
 
 2. when to delete source vlog files?
 
