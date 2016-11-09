@@ -87,29 +87,6 @@ bool stopDbPrefetch = false;
 //and also keep snapshoted iterators can fetch the outdated value.
 static SequenceNumber lastOperatedSeq = 0;
 
-
-//class Snapshot {
-//private:
-//  SequenceNumber snapedSeq;//(fixme)SequenceNumber seems not neccessary
-//  const rocksdb::Snapshot *snap;
-//
-//public:
-//  //(fixme)currently move out of class to skip compile error
-//  Snapshot(SequenceNumber snapedSeq_);
-//
-//  SequenceNumber GetSnapshotSequence() const
-//  { 
-//    return snapedSeq;
-//  }
-//  
-//  const rocksdb::Snapshot *GetRocksdbSnap() const
-//  {
-//    return snap;
-//  }
-//
-//  ~Snapshot();
-//};
-
 //manager the snapshots
 class SnapshotManager
 {
