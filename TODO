@@ -12,20 +12,20 @@
 12.free resources is not handled (DONE)
 13.write vlog first, then write to rocksdb (DONE)
 14.write db checkpoint/recovery 
-15.it seems better to make vlogs sorted.
+15.it seems better to make vlogs sorted.(won't fix)
 16.for batch writes, how can we determine the offset to the vlogfile? if single writer, this's not a problem. (single write of a vlog)
-17.create threads for read/write.
+17.create threads for read/write. (won't fix)
 18.reduce memory copy
 19.direct IO allign
 20.deal with updated keys: we write to a different position in vlog when 
    updating, bu we cann't reclaim the space according to current implemetion,
    because the key still exists. maybe we should write whether the vlog item
-   should be reclaimed on vlog ondisk struct.
-21.deal with a batch with Get(a writebatch would never have a read operation, so this's not a problem)
+   should be reclaimed on vlog ondisk struct.(DONE)
+21.deal with a batch with Get(DONE a writebatch would never have a read operation, so this's not a problem)
 22.handle read/write errors, like EINTR (DONE)
 23.change Vlog_query interface, abandon current std out version
 24.background thread compaction: when do we conduct a compaction?
-25.make it a daemon, processing put/get requests
+25.make it a daemon, processing put/get requests(DONE, make it a lib)
 26.control the size of each write batch
 27.how to record compaction status
 28.should we skip if the vlog file is full? we rely on the offset 0 to be a good header.
@@ -34,41 +34,43 @@
 30.use shared_ptr to avoid resource leak
 31.implement vlog readahead
 32.it's ridiculous to composite DBWrapper into VlogFileManager (DONE)
-33.replace timestamp with sequence number
+33.replace timestamp with sequence number(DONE)
 34.optimize encode/decode, stole from rocksdb
 35.when to trigger compaction? compaction is only used for disk space reclaim, doing it may cause performance decrease, so we should not compact when there is high pressure. Actually we can trigger it mannually or periodly.
 36.VlogFileManger should know all the vlog files
-37.we should record whether a vlog is writable?
+37.we should record whether a vlog is writable?(DONE, use appenable)
 38.disable rocksdb WAL for performance, add WiscKeydb recovery(WON'T FIX):
    it's impossible to recover if WAL is totally disabled, the author of original paper claimed that it's possible
    to record the head offset in lsm with kv pair <"head", head-vlog-offset>, and use it for recovery,
    while the head-vlog-offset means all (key, vlog-locator) pairs all have been wrote to lsm, however, without WAL, 
    we actually have no idea whether the (key, vlog-locator) are persistted, if we set hook to memtable flush,
    it's hard for us to know the biggest offset (aka vlog-offset we want to know), because it's only the keys are
-   sorted, and we want a sortted biggest value. It's really efficient and complicated to disable WAL for perforamnce.
+   sorted, and we want a sortted biggest value. It's really un efficient and complicated to disable WAL for perforamnce.
+   users can choose whether to use wal with their own according to their own environment.
 
-39.to support snapshot, we should:
+39.to support snapshot, we should(DONE):
    1.tracking all the live vlog files, never remove dependent vlog files, add reference count for vlog files.
       "While we create a version, we incremented the reference counts for all files. If a version is not needed, 
        all files’ of the version have their reference counts decremented. If a file’s reference count drops to 0, the file can be deleted."
       "https://github.com/facebook/rocksdb/wiki/How-we-keep-track-of-live-SST-files"
    2.the snapshot sequence s1 is provided, when iterating or getting, we should skip the s1 newer than sq.
 40.check validity of input offset/length according to current vlog offset 
-41.is it possible a key is exist in lsm, but not in vlog? now we think it impossible.
-42.suppport async inserts, we now always use sync ones, write vlog syncly, and then write lsm
+41.is it possible a key is exist in lsm, but not in vlog? now we think it impossible, but we should deal with it.
+42.suppport async inserts, we now always use sync ones, write vlog syncly, and then write lsm(WON'T FIX)
 44.posix_fadvise() when point query and range query
 45.fix to many open files
-46.use vlog thread and db thread to process requests
-47.what if crash during compaction, interrupted compaction
+46.use vlog thread and db thread to process requests(DONE)
+47.what if crash during compaction, interrupted compaction(see details in doc/compaction.md)
 48.seperate vlog to small blocks, it may have main three benefits:
    1.jump to next block if one block disk drive failed, current implemention cannot do this
    2.easy to find the boundry
    3.mush smaller memory allocation
 49.posix_fadvise() is also used for big value readahead
-50.we don't need to support column family.
+50.we don't need to support column family.(DONE)
 51.drop static variables
 52.clean up the interfaces and do db_bench test
-53.implement MultiGet() API, reads many keys from the same consistent view
+53.implement MultiGet() API, reads many keys from the same consistent view (DONE)
 54.should not open vlog file with sync flag, sync it when sync=true
-55.if a compacted vlog file is too small, try to compact it to the end of another vlogfile.
+55.if a compacted vlog file is too small, try to compact it with another to the the third new vlogfile.
 56.store wisckeydb metadata in another column family. (DONE)
+57.traverse vlog file and implement recovery
