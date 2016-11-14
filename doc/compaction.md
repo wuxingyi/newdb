@@ -42,12 +42,16 @@ it is ```true```, then we know the crash interrupted the compaction.
 we must record ```srcseq``` and ```destseq``` when compaction, when created,  
 the are both ```-1```, when compacting, the ```srcseq``` of the src vlog file is  
 set as the seq of the src vlog file, and the ```destseq``` of the dest vlog  
-file is set as the seq of the dest vlog file. if the dest vlog file contains a 
+file is set as the seq of the dest vlog file. if the dest vlog file contains a  
+srcseq != -1 and compactingflag == true, we can find the src vlog file and then  
+verfy the header with dest vlog file to make sure it has a destseq equals dest  
+vlog file, and compactingflag == true. 
 
-after crash, we read the struct CompactionHeader and find src and dest vlog files,  
-then we traverse to the last entry of the the dest vlog file and get the (key, sequence)  
-pair, the we traverse the src vlog file and find the same entry, and start compaction  
-from this entry. by doing this, we can avoid the cost of reading from rocksdb. 
+only find the src and dest vlog file is not after crash, we should read the struct  
+CompactionHeader and find src and dest vlog files, then we traverse to the last entry  
+of the the dest vlog file and get the (key, sequence) pair, the we traverse the src   
+vlog file and find the same entry, and start compaction from this entry. by doing this,   
+we can avoid the cost of reading from rocksdb. 
 
 ### 3. how to deal with the compacted vlog file
 we manage a very big compacted vlog file for simplicity, it helps us with less  
