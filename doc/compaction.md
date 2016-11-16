@@ -31,7 +31,9 @@ in current implemetnion, we record the compaction status at the head of the vlog
 file, using the format(struct CompactionHeader) :  
 
 ```
-| magic | srcseq | destseq | compactingflag | 
+-------------------------------------------------------------
+| magic | srcseq | destseq | compactingflag | appenableflag |
+-------------------------------------------------------------
 ```
 when creating a new vlog file for append, ```compactingflag``` is set to ```false```,    
 but at the begining of compaction, we set ```compactingflag``` to ```true```, iff  
@@ -53,12 +55,17 @@ of the the dest vlog file and get the (key, sequence) pair, the we traverse the 
 vlog file and find the same entry, and start compaction from this entry. by doing this,   
 we can avoid the cost of reading from rocksdb. 
 
+the flag ```appenableflag``` is used to persist whether a vlog file is appenable,  
+it is set to false when a vlog file is not allowed to append.
+
+
 ### 3. how to deal with the compacted vlog file
 we manage a very big compacted vlog file for simplicity, it helps us with less  
 open files. As describled in 1.3, we should do a double compaction to the compacted
 vlog when it has too many outdated keys, however, since a compacted vlog may hold  
 much larger nubmber of entries, the users configuration for triggering compaction   
 should be much bigger.
+
 
 2. when to delete source vlog files?
 

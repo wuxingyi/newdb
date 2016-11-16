@@ -129,10 +129,11 @@ private:
 
     for(int i = 0; i < 1; i++)
     {
-      //remove all but the last
       op.DB_Delete(keys[i]);
     }
     cout << __func__ << ": FINISHED" << endl;
+    
+    TEST_QueryAll();
   }
 
   void TEST_QueryAll()
@@ -397,8 +398,8 @@ private:
       int ret = op.DB_Get(ReadOptions(), string(it->key().data(), it->key().size()), value);  
       if (0 == ret)
       {
-        //cout << "key is " << it->key().data() << endl;
-        //cout << "value is " << value << endl;
+        cout << "key is " << it->key().data() << endl;
+        cout << "value is " << value << endl;
         
         //reserved keys are not count
         ++gotkeys;
@@ -437,7 +438,7 @@ int main(int argc, char **argv)
   DB db;
   db.open();
   TEST test(argc, argv);
-  for(int i = 0; i < 10; i++)
+  for(int i = 0; i < 1; i++)
   {
     test.run();
   }

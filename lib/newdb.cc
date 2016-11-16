@@ -47,12 +47,12 @@ keysize and valuesize.
 //only EntryLocator is stored as value|
 //----------------------------------------
 using namespace std;
-static const int Vlogsize = 1<<8;
 const std::string kDBPath = "DBDATA/ROCKSDB";
 const std::string kDBVlogBase = "./DBDATA/Vlog";
 bool syncflag = false;
 int testkeys = 10;
 int maxOutdatedKeys = 0;
+static int assertat = 0;
 
 //VlogFileManager is singleton, only one instance
 //only used by the write/read thread
@@ -71,7 +71,8 @@ static std::condition_variable vlog_prefetchCond;
 static std::mutex vlog_prefetchLock;
 static map<string, string> prefetchedKV;
 
-static deque<int> vlogSeqQ;
+//an element in this queue is a map of (srcseq, destseq)
+static deque<pair<int, int>> vlogSeqQ;
 static std::condition_variable vlogCompaction_cond;
 static std::mutex vlogCompactionLock;
 typedef uint64_t SequenceNumber;
@@ -129,6 +130,45 @@ public:
   }
 };
 
+//compaction header at the head of a vlogfile
+struct CompactionHeader
+{
+  int64_t magic = 0x007007;  
+  int srcseq;
+  int destseq;
+  bool compactingflag;
+  bool appendableflag;
+  CompactionHeader(int srcseq_ = -1, int destseq_ = -1, bool compactingflag_ = false,
+                   bool appendableflag_ = true):
+      srcseq(srcseq_), destseq(destseq_),compactingflag(compactingflag_),
+      appendableflag(appendableflag_){}
+
+  //encode a CompactionHeader struct to a string
+  void encode(string &outstring)
+  {
+    size_t ENTRYSIZE = sizeof(struct CompactionHeader);
+    char p[ENTRYSIZE];
+    memcpy(p, this, ENTRYSIZE);
+
+    outstring = string(p, ENTRYSIZE);
+  }
+
+  //decode a string to a CompactionHeader
+  void decode(const string &instring)
+  {
+    CompactionHeader *pheader;
+
+    size_t ENTRYSIZE = sizeof(struct CompactionHeader);
+    char p[ENTRYSIZE];
+    memcpy(p, instring.data(), ENTRYSIZE);
+
+    pheader = (CompactionHeader *)p;
+    this->srcseq = pheader->srcseq;
+    this->destseq = pheader->destseq;
+    this->compactingflag = pheader->compactingflag;
+    this->appendableflag = pheader->appendableflag;
+  }
+};
 //it's crazy to have a key/value bigger than 4GB:), but i don't want to risk.
 //a key/value string is followed by a VlogOndiskEntryHeader struct
 struct VlogOndiskEntryHeader
@@ -286,7 +326,7 @@ public:
     isCompacting = true;
   }
 
-  bool IsAppenable()
+  bool IsAppendable()
   {
     return appendable;
   }
@@ -351,6 +391,7 @@ public:
     
     //compactingOffset set to -1 when creating
     compactingOffset = -1;
+    appendable = getAppendableFlag();
   }
   
   ~VlogFile()
@@ -372,6 +413,47 @@ public:
     }
 
     return false;
+  }
+
+  //write at offset 0, if the vlog file is newly created, change it's tailOffset
+  //otherwise, it's a update operation, tailOffset remains unchanged.
+  int WriteCompactionHeader(CompactionHeader &header)
+  {
+    //write CompactionHeader at the start of the vlogfile
+    string headerstring;
+    header.encode(headerstring);
+    size_t left = headerstring.size();
+    const char *src  = headerstring.data();
+
+    //always start from 0, and it should not change tailOffset
+    int64_t offset = 0;
+    while (0 != left)
+    {
+      ssize_t done = pwrite(fd, src, left, offset);
+      if (done < 0)
+      {
+        // error while writing to file
+        if (errno == EINTR)
+        {
+          // write was interrupted, try again.
+          continue;
+        }
+        return errno;
+      }
+      left -= done;
+      offset += done;
+      src += done;
+    }
+
+    assert(0 == left);
+
+    //in this case this vlog file is newly created
+    //otherwise, we just update the header
+    if (0 == tailOffset)
+    {
+      tailOffset += sizeof(CompactionHeader);
+    }
+    return 0;
   }
 
   //write at offset tailOffset
@@ -432,6 +514,28 @@ public:
     }
 
     return 0;
+  }
+
+private:
+  bool getAppendableFlag()
+  {
+    if (tailOffset < sizeof(CompactionHeader))
+      return false;
+    
+    int fixedsize = sizeof(struct CompactionHeader);
+    char p[fixedsize];
+  
+    int ret = Read(p, fixedsize, 0);
+    if (0 != ret)
+    {
+      cerr << "error in reading compaction header, error is " << ret << endl;
+      return false;
+    }
+    
+    string headerstring(p, fixedsize);
+    CompactionHeader cheader;
+    cheader.decode(headerstring);
+    return cheader.appendableflag;
   }
 };
 
@@ -823,7 +927,7 @@ private:
     return true;
   }
 
-  bool vfminit()
+  void vfminit()
   {
     string seqstring;
     int ret = pdb->ReservedGet(vfmWrittingKey, seqstring);  
@@ -841,9 +945,16 @@ private:
       assert(currentSeq % 2 == 0);
     }
 
-    //put the VlogFile to vector
     VlogFile *vf = new VlogFile(currentSeq); 
     assert(nullptr != vf);
+  
+    //this file may be newly created, else we don't need to write the same head.
+    if (0 == vf->GetTailOffset())
+    {
+      //this is the appending vlog file, so it's unlikely to have compaction info.
+      CompactionHeader header;
+      vf->WriteCompactionHeader(header);
+    }
 
     allfiles.insert(make_pair(currentSeq, vf));
 
@@ -855,11 +966,47 @@ private:
 
     if (0 < vf->GetTailOffset())
     {
-      lastOperatedSeq = this->getLatestSeq(vf->GetSeq(), 0);
+      lastOperatedSeq = this->getLatestSeq(vf->GetSeq(), sizeof(CompactionHeader));
       cout << "lastOperatedSeq is "  << lastOperatedSeq << endl; 
     }
 
-    //actually the biggest Seq is impossible in the compacted vlog
+    //traverse all the vlog files and resume interrupted compaction
+    int i = 0;
+    for (; i < currentSeq; i++) 
+    {
+      VlogFile *vf = GetVlogFile(i);
+      if (nullptr != vf)
+      {
+        int fixedsize = sizeof(struct CompactionHeader);
+
+        char p[fixedsize];
+  
+        int ret = vf->Read(p, fixedsize, 0);
+        if (0 != ret)
+        {
+          cerr << "error in reading compaction header, error is " << ret << endl;
+          return;
+        }
+
+        string headerstring(p, fixedsize);
+        CompactionHeader cheader;
+        cheader.decode(headerstring);
+      
+        if (-1 != cheader.destseq)
+        {
+          
+          //it's time to remuse vlog compaction
+          {
+            std::unique_lock<std::mutex> l(vlogCompactionLock);
+
+            //srcseq is my own seq, destseq is cheader.destseq
+            vlogSeqQ.push_back(make_pair(vf->GetSeq(), cheader.destseq));
+            cout << "waking up compaction thread to resume" << endl;
+            vlogCompaction_cond.notify_one();
+          }
+        }
+      }
+    }
   }
 
 public:
@@ -877,10 +1024,13 @@ public:
       //we should mark this file as unappendable, so this file can be  compacted
       allfiles[currentSeq]->MarkUnappenable();
 
-      //we should mark this file as unappendable
       //original vlogs are allways even numbers
       currentSeq += 2;
       VlogFile *vf = new VlogFile(currentSeq); 
+
+      //we should mark this file as unappendable in vlog file
+      CompactionHeader header(-1, -1, false, false);
+      vf->WriteCompactionHeader(header);
       allfiles.insert(make_pair(currentSeq, vf));
       pdb->ReservedPut(vfmWrittingKey, to_string(currentSeq));
     }
@@ -964,7 +1114,7 @@ private:
     int ret = vf->Read(p, fixedsize, vlogoffset);
     if (0 != ret)
     {
-      cerr << "error in writting vlog entry, error is " << ret << endl;
+      cerr << "error in reading vlog entry, error is " << ret << endl;
       return -1;
     }
     
@@ -1066,9 +1216,10 @@ public:
     {
       if (isVlogExist(VlogFile::GetFileNameBySeq(i)))
       {
+        //only for test, we don't consider CompactionHeader
         VlogFile *vf = new VlogFile(i);
         allfiles.insert(make_pair(i, vf));
-        traverseVlog(i, 0);
+        traverseVlog(i, sizeof(CompactionHeader));
         if (i != currentSeq)
           allfiles.erase(i);
       }
@@ -1096,9 +1247,14 @@ private:
     }
     else
     {
-      cout << "compacting from " << srcseq << " to " << destseq << endl;
+      cout << "compacting from " << srcseq << " to " << destseq << " at offset " << vlogoffset << endl;
     }
 
+    //interrupt compaction every three times
+    if (3 == assertat)
+      assert(0);
+
+    ++assertat;
     VlogFile *srcvf = allfiles[srcseq];
     if (vlogoffset >= srcvf->GetTailOffset())
     {
@@ -1141,6 +1297,8 @@ private:
     string vheaderkey(pkey, vheader.GetKeySize());
     //cout << "key is " << vheaderkey << endl;
 
+    VlogFile *destvf = allfiles[destseq];
+    assert(nullptr != destvf);
     //we query rocksdb with keystring 
     string locator;
     ret = pdb->Get(vheaderkey, locator);
@@ -1150,12 +1308,21 @@ private:
       //actually we do nothing here, because we append the exist entry
       //to another new vlog file, as a entry should be deleted, we just
       //ignore it and move to the next entry.
+      cout << "this key has already been deleted" << endl;
       if (vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize() < srcvf->GetTailOffset())
       {
         compactToNewVlog(srcseq, destseq, vlogoffset + fixedsize + vheader.GetKeySize() + vheader.GetValueSize());
       }
       else
       {
+        //after finishing compaction, we should update CompactionHeader
+        //they must marked as unappenable
+        CompactionHeader cheader(-1, -1, false, false);
+        string headerstring;
+        cheader.encode(headerstring);
+        srcvf->WriteCompactionHeader(cheader);
+        destvf->WriteCompactionHeader(cheader);
+          
         if (true == shouldDelete())
         {
           //all items has been compacted and this vlog is not referenced.
@@ -1181,9 +1348,6 @@ private:
       }
       else
       {
-        VlogFile *destvf = allfiles[destseq];
-        assert(nullptr != destvf);
-
         //so we should copy the value to compacted Vlog
         //add a terminal null
         int length = fixedsize + vheader.GetKeySize() + vheader.GetValueSize(); 
@@ -1196,7 +1360,7 @@ private:
 
         int64_t destOff = destvf->GetTailOffset();
         //write to dest vlogfile
-        cout << "writing to destvf at offset " << destOff << endl;
+        cout << "writing to destvf at offset " << destOff << " with length " << length << endl;
         int writeret = destvf->Write(string(p, length));
         assert(writeret == 0);
 
@@ -1217,6 +1381,13 @@ private:
       }
       else
       {
+        //after finishing compaction, we should update CompactionHeader
+        CompactionHeader cheader(-1, -1, false, false);
+        string headerstring;
+        cheader.encode(headerstring);
+        srcvf->WriteCompactionHeader(cheader);
+        destvf->WriteCompactionHeader(cheader);
+          
         //all items has been compacted
         if (true == shouldDelete())
         {
@@ -1239,7 +1410,7 @@ public:
       cout << "this file doesnot exist" << endl;
       return false;
     }
-    if (srcvf->IsAppenable())
+    if (srcvf->IsAppendable())
     {
       //this file is still appenable, so we cann't compact it now.
       //we just return here
@@ -1257,46 +1428,175 @@ public:
     srcvf->MarkCompacting();
     return true;
   }
+
+private:
+  //find the sequence number of last entry of a vlog file
+  SequenceNumber findLastEntry(int seq)
+  {
+    SequenceNumber retseq = 0;
+    VlogFile *destvf = GetVlogFile(seq); 
+    assert(nullptr != destvf);
+
+    //(fixme)read the CompactionHeader to judge whether the my srcseq equals @srcseq
+    //we just assume it correct right now
+    int64_t curoffset = sizeof(CompactionHeader);
+    int64_t filesize = destvf->GetTailOffset();
+    int fixedsize = sizeof(struct VlogOndiskEntryHeader);
+
+    //in this case, this compacted vlog file doesn't has any entriyes
+    if (curoffset == filesize)
+      return -1;
+
+  
+    while (curoffset < filesize)
+    {
+      char p[fixedsize];
+
+      int ret = destvf->Read(p, fixedsize, curoffset);
+      if (0 != ret)
+      {
+        cerr << "error in reading vlog entry, error is " << ret << endl;
+        return -1;
+      }
+      
+      string kvstring(p, fixedsize);
+
+      //got keysize/valeusize from kvstring
+      VlogOndiskEntryHeader vheader(0, 0);
+      vheader.decode(kvstring);
+
+      cout << "entry sequence number is " << vheader.GetEntrySeq() << endl;
+      retseq = vheader.GetEntrySeq();
+
+      //advance it
+      curoffset += vheader.GetKeySize() + vheader.GetValueSize() + fixedsize;
+    }
+
+    return retseq;
+  }
+
+  //find the last offset of a src vlogfile
+  int64_t findLastOffset(int srcvlogseq, SequenceNumber seq)
+  {
+    if (-1 == seq)
+    {
+      return sizeof(CompactionHeader);
+    }
+
+    VlogFile *srcvf = GetVlogFile(srcvlogseq); 
+    assert(nullptr != srcvf);
+
+    //(fixme)read the CompactionHeader to judge whether the my srcseq equals @srcseq
+    //we just assume it correct right now
+    int64_t curoffset = sizeof(CompactionHeader);
+    int64_t filesize = srcvf->GetTailOffset();
+    int fixedsize = sizeof(struct VlogOndiskEntryHeader);
+    while (curoffset < filesize)
+    {
+      char p[fixedsize];
+      int ret = srcvf->Read(p, fixedsize, curoffset);
+      if (0 != ret)
+      {
+        cerr << "error in reading vlog entry, error is " << ret << endl;
+        return -1;
+      }
+      
+      string kvstring(p, fixedsize);
+
+      //got keysize/valeusize from kvstring
+      VlogOndiskEntryHeader vheader(0, 0);
+      vheader.decode(kvstring);
+
+      cout << "entry sequence number is " << vheader.GetEntrySeq() << endl;
+      curoffset += vheader.GetKeySize() + vheader.GetValueSize() + fixedsize;
+
+      //if we find this seq, we return, else the loop goes to next run
+      if (seq == vheader.GetEntrySeq())
+      {
+        return curoffset;
+      }
+    }
+
+    return -1;
+  }
 public:
   //(fixme) record the process of compaction
   //(TODO): add arguments to determine whether need a vlog compaction
   //(fixme):compation thread also have to access to the db, maybe need locks.
-  int CompactVlog(int srcseq, int64_t vlogoffset)
+  int CompactVlog(int srcseq, int destseq)
   {
-    cout << "start compacting vlog file " << srcseq << endl;
-    string sseq;
-    int ret = pdb->ReservedGet(vfmCompactingKey, sseq);  
-    if (ret != 0)
+    cout << "start compacting vlog file " << srcseq << " to " << destseq << endl;
+
+    //if destseq == -1, then it always start from the first entry
+    //else we must find out where to start compaction.
+    int64_t startingoffset = sizeof(CompactionHeader);
+
+    //we must find a destseq for this compaction
+    if (-1 == destseq)
     {
-      //no key is found, so this is no vlog files
-      availCompactingSeq = 1;
-      cout << "compacting seq is " << availCompactingSeq << endl;
+      string sseq;
+      int ret = pdb->ReservedGet(vfmCompactingKey, sseq);  
+      if (ret != 0)
+      {
+        //no key is found, so this is no vlog files
+        availCompactingSeq = 1;
+        cout << "compacting seq is " << availCompactingSeq << endl;
+      }
+      else
+      {
+        availCompactingSeq = atoi(sseq.c_str());
+        cout << "compacting seq is " << availCompactingSeq << endl;
+
+        assert(availCompactingSeq % 2 == 1);
+      }
+
+      //destvf is newly created, and we set the right CompactionHeader here
+      //it must be appenable during compaction
+      VlogFile *vf = new VlogFile(availCompactingSeq); 
+      CompactionHeader header(srcseq, -1, true, true);
+      vf->WriteCompactionHeader(header);
+      assert(nullptr != vf);
+      allfiles.insert(make_pair(availCompactingSeq, vf));
+      destseq = availCompactingSeq;
+
+      //put seq 1 to rocksdb
+      if (1 == availCompactingSeq)
+      {
+        pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
+      }
+
+      //update src vlog file's CompactionHeader to record the compaction process
+      VlogFile *srcvf = allfiles[srcseq];
+
+      //it must be recored as unappenable
+      CompactionHeader srcheader(-1, availCompactingSeq, true, false);
+      assert(nullptr != srcvf);
+      srcvf->WriteCompactionHeader(srcheader);
     }
     else
     {
-      availCompactingSeq = atoi(sseq.c_str());
-      cout << "compacting seq is " << availCompactingSeq << endl;
-
-      assert(availCompactingSeq % 2 == 1);
+      //in this case, we must find out where to resume compaction
+      //doc/compaction.md describe the machnism: we find the tail entry of
+      //the dest vlog file and then find it from the src vlog file.
+      SequenceNumber entryseq = findLastEntry(destseq);
+      startingoffset = findLastOffset(srcseq, entryseq); 
     }
-    VlogFile *vf = new VlogFile(availCompactingSeq); 
-    assert(nullptr != vf);
-    allfiles.insert(make_pair(availCompactingSeq, vf));
-
-    //put seq 1 to rocksdb
-    if (1 == availCompactingSeq)
-    {
-      pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
-    }
+  
+    assert(-1 != startingoffset);
 
     //we should apply a new VlogFile for compaction
     //maybe we should use a big number seq to avoid seq race condition
-    compactToNewVlog(srcseq, availCompactingSeq, 0);
+    compactToNewVlog(srcseq, destseq, startingoffset);
 
-    //(fixme)after compaction, the file should be closed
-    //after compaction, update the availCompactingSeq
-    availCompactingSeq += 2;
-    pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
+    //we don't own a availCompactingSeq when it's a resumable compaction
+    //in which case we don't update availCompactingSeq
+    if (1 == availCompactingSeq)
+    {
+      //(fixme)after compaction, the file should be closed
+      //after compaction, update the availCompactingSeq
+      availCompactingSeq += 2;
+      pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
+    }
   }
 };
 
@@ -1440,6 +1740,7 @@ int DBOperations::DB_Put(const string &key, const string &value)
 
   //write vlog
   VlogFile *p = pvfm->PickVlogFileToWrite(needwritesize);
+  assert(nullptr != p);
   int64_t originalOffset = p->GetTailOffset();
 
   //cout << "original offset is " << originalOffset << endl;
@@ -1489,6 +1790,7 @@ int DBOperations::DB_Delete(const string &key)
   vf->IncreOutdateKeys();
   if (vf->GetOutdatedKeys() > maxOutdatedKeys)
   {
+    cout << "to many outdated keys, try to trigger compaction" << endl;
     //it's time to wake up vlog compaction thread
     {
       std::unique_lock<std::mutex> l(vlogCompactionLock);
@@ -1496,7 +1798,7 @@ int DBOperations::DB_Delete(const string &key)
       //maybe others have already compact it 
       if (pvfm->ShouldCompact(vf->GetSeq()))
       {
-        vlogSeqQ.push_back(vf->GetSeq());
+        vlogSeqQ.push_back(make_pair(vf->GetSeq(), -1));
         cout << "waking up compaction thread " << endl;
         vlogCompaction_cond.notify_one();
       }
@@ -1710,8 +2012,8 @@ void DBOperations::DB_QueryAll()
     int ret = DB_Get(ReadOptions(), string(it->key().data(), it->key().size()), value);
     if (0 == ret)
     {
-      cout << "key is " << it->key().data() << endl;
-      cout << "value is " << value << endl;
+      //cout << "key is " << it->key().data() << endl;
+      //cout << "value is " << value << endl;
 
       //reserved keys are not count
       ++gotkeys;
@@ -1943,8 +2245,14 @@ void *vlogCompactionThread(void *p)
     else
     {
       l.unlock();
-      int srcseq = vlogSeqQ.front();
-      pvfm->CompactVlog(srcseq, 0);
+
+      //there are two different case here, when destseq == -1, we need
+      //to provide destseq by offering a compactingKey, else, this is a 
+      //resumed compaction, we use the original destseq.
+      int srcseq = vlogSeqQ.front().first;
+      int destseq = vlogSeqQ.front().second;
+
+      pvfm->CompactVlog(srcseq, destseq);
       cout << "finshed compacting " << srcseq << endl;
       vlogSeqQ.pop_front();
       l.lock();
