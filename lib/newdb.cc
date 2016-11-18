@@ -755,7 +755,7 @@ public:
   }
   
   //destroy the db
-  int Destory()
+  void Destory()
   {
     rocksdb::Options options;
     rocksdb::DestroyDB(dbPath, options);
@@ -812,12 +812,16 @@ string Iterator::key()
 {
   if(Valid())
     return string(dbiter->key().data(), dbiter->key().size());
+  else
+	return "";
 }
 
 string Iterator::value()
 {
   if(Valid())
     return string(dbiter->value().data(), dbiter->value().size());
+  else
+	return "";
 }
 
 //advance the iterator one step
@@ -1088,7 +1092,7 @@ public:
     }
   }
 
-  int *RemoveVlogFile(int seq)
+  void RemoveVlogFile(int seq)
   {
     if (nullptr != allfiles[seq])
     {
@@ -1100,6 +1104,7 @@ public:
       allfiles.erase(seq);
       delete vf;
     }
+	return; 
   }
 
   ~VlogFileManager()
@@ -1156,14 +1161,9 @@ private:
     //(fixme)don't use recursion
     if (nextoffset < vf->GetTailOffset())
     {
-      cout << __func__ << " <= " << endl;
       return getLatestSeq(seq, nextoffset);
     }
-    else
-    {
-      cout << __func__ << " > " << endl;
-      return currSeq;
-    }
+    return currSeq;
   }
 
   //traverse a VlogFile with sequence seq
@@ -1227,13 +1227,16 @@ private:
     }
 
     //string vheadervalue(pvalue, vheader.GetValueSize());
-    delete pkey, pvalue;
+    delete pkey;
+	delete pvalue;
     int64_t nextoffset = vlogoffset + fixedsize + vheader.GetValueSize() + vheader.GetKeySize(); 
     if (nextoffset < vf->GetTailOffset())
-      return traverseVlog(seq, nextoffset);
+      return (int)traverseVlog(seq, nextoffset);
+	else
+	  return 0;
   }
 public:
-  int TraverAllVlogs()
+  void TraverAllVlogs()
   {
     //maybe not all files are in the map, so we should not use the map to traverse all vlogs
     //actually we should use file stats
@@ -1375,7 +1378,7 @@ private:
       {
         //so we should copy the value to compacted Vlog
         //add a terminal null
-        int length = fixedsize + vheader.GetKeySize() + vheader.GetValueSize(); 
+        int64_t length = fixedsize + vheader.GetKeySize() + vheader.GetValueSize(); 
         char *p = (char *)malloc(length);
         int readret = srcvf->Read(p, length, vlogoffset);
         if (0 != readret)
@@ -1424,6 +1427,7 @@ private:
         }
       }
     }
+	return 0;
   }
 public:
   bool ShouldCompact(int srcseq)
@@ -1597,7 +1601,7 @@ public:
     cout << "start compacting vlog file " << srcseq << " to " << destseq << endl;
     //we should apply a new VlogFile for compaction
     //maybe we should use a big number seq to avoid seq race condition
-    compactToNewVlog(srcseq, destseq, startingoffset);
+    return compactToNewVlog(srcseq, destseq, startingoffset);
   }
 };
 
@@ -1643,7 +1647,7 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
   assert(keys.size() == values.size());
   assert(keys.size() == deleteflags.size());
 
-  int nums = keys.size();
+  size_t nums = keys.size();
   
   //(fixme): it may be very large
   string vlogBatchString;
@@ -1714,11 +1718,9 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
   }
 
   ret = pdb->BatchPut(wbatch); 
-  if (0 != ret)
-  {
-    //fixme: should convert return code
-    return ret;  
-  }
+
+  //fixme: should convert return code
+  return ret;  
 }
 
 //we first write encoded value to vlog, then to rocksdb.
@@ -1758,11 +1760,9 @@ int DBOperations::DB_Put(const string &key, const string &value)
   string elstring;
   el.encode(elstring);
   ret = pdb->SyncPut(key, elstring); 
-  if (0 != ret)
-  {
-    //fixme: should convert return code
-    return ret;  
-  }
+
+  //fixme: should convert return code
+  return ret;  
 }
 
 //Delete a key from wisckeydb
@@ -1819,7 +1819,7 @@ int DBOperations::_db_Get(const string &key, const string &locator, string &valu
 
   assert(nullptr != vf);
   
-  int kvsize = el.GetLength();
+  int64_t kvsize = el.GetLength();
 
   char p[kvsize];
   int ret = vf->Read(p, kvsize, el.GetOffset());
@@ -1898,7 +1898,7 @@ std::vector<int> DBOperations::DB_MultiGet(const ReadOptions &rop, const std::ve
     VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
     assert(nullptr != vf);
     
-    int kvsize = el.GetLength();
+    int64_t kvsize = el.GetLength();
 
     char p[kvsize];
     ret = vf->Read(p, kvsize, el.GetOffset());
@@ -1971,7 +1971,7 @@ int DBOperations::DB_Get(const ReadOptions &rop, const string &key, string &valu
   VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
   assert(nullptr != vf);
   
-  int kvsize = el.GetLength();
+  int64_t kvsize = el.GetLength();
 
   char p[kvsize];
   ret = vf->Read(p, kvsize, el.GetOffset());
