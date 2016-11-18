@@ -74,3 +74,4 @@
 55.if a compacted vlog file is too small, try to compact it with another to the the third new vlogfile.
 56.store wisckeydb metadata in another column family. (DONE)
 57.traverse vlog file and implement recovery
+58.make prefetch and compaction multithreaded
