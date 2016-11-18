@@ -520,7 +520,7 @@ private:
   bool getAppendableFlag()
   {
     if (tailOffset < sizeof(CompactionHeader))
-      return false;
+      return true;
     
     int fixedsize = sizeof(struct CompactionHeader);
     char p[fixedsize];
@@ -929,7 +929,9 @@ private:
 
   void vfminit()
   {
-    string seqstring;
+    string seqstring, sseq;
+
+    //init vlog seq
     int ret = pdb->ReservedGet(vfmWrittingKey, seqstring);  
     if (ret != 0)
     {
@@ -943,6 +945,24 @@ private:
       cout << "current seq is " << currentSeq << endl;
 
       assert(currentSeq % 2 == 0);
+    }
+
+    //init compacting seq
+    ret = pdb->ReservedGet(vfmCompactingKey, sseq);  
+    if (ret != 0)
+    {
+      availCompactingSeq = 1;
+
+      //put seq 1 to rocksdb
+      pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
+      cout << "compacting seq is " << availCompactingSeq << endl;
+    }
+    else
+    {
+      availCompactingSeq = atoi(sseq.c_str());
+      cout << "compacting seq is " << availCompactingSeq << endl;
+
+      assert(availCompactingSeq % 2 == 1);
     }
 
     VlogFile *vf = new VlogFile(currentSeq); 
@@ -971,8 +991,9 @@ private:
     }
 
     //traverse all the vlog files and resume interrupted compaction
+    //only orignal vlog files are concerned
     int i = 0;
-    for (; i < currentSeq; i++) 
+    for (; i < currentSeq; i=i+2) 
     {
       VlogFile *vf = GetVlogFile(i);
       if (nullptr != vf)
@@ -1004,6 +1025,10 @@ private:
             cout << "waking up compaction thread to resume" << endl;
             vlogCompaction_cond.notify_one();
           }
+        }
+        else
+        {
+          cout << "no need to compact this vlog file seq " << i << endl;
         }
       }
     }
@@ -1092,7 +1117,7 @@ private:
   {
     static SequenceNumber currSeq = 0;
 
-    cout << __func__ << ": we are using " << currSeq << endl;
+    //cout << __func__ << ": we are using " << currSeq << endl;
     if (nullptr == allfiles[seq])
     {
       cout << "file does not exist" << endl;
@@ -1251,8 +1276,8 @@ private:
     }
 
     //interrupt compaction every three times
-    if (3 == assertat)
-      assert(0);
+    //if (3 == assertat)
+    //  assert(0);
 
     ++assertat;
     VlogFile *srcvf = allfiles[srcseq];
@@ -1465,7 +1490,7 @@ private:
       VlogOndiskEntryHeader vheader(0, 0);
       vheader.decode(kvstring);
 
-      cout << "entry sequence number is " << vheader.GetEntrySeq() << endl;
+      //cout << "entry sequence number is " << vheader.GetEntrySeq() << endl;
       retseq = vheader.GetEntrySeq();
 
       //advance it
@@ -1507,7 +1532,7 @@ private:
       VlogOndiskEntryHeader vheader(0, 0);
       vheader.decode(kvstring);
 
-      cout << "entry sequence number is " << vheader.GetEntrySeq() << endl;
+      //cout << "entry sequence number is " << vheader.GetEntrySeq() << endl;
       curoffset += vheader.GetKeySize() + vheader.GetValueSize() + fixedsize;
 
       //if we find this seq, we return, else the loop goes to next run
@@ -1525,7 +1550,7 @@ public:
   //(fixme):compation thread also have to access to the db, maybe need locks.
   int CompactVlog(int srcseq, int destseq)
   {
-    cout << "start compacting vlog file " << srcseq << " to " << destseq << endl;
+    int originalseq = destseq;
 
     //if destseq == -1, then it always start from the first entry
     //else we must find out where to start compaction.
@@ -1534,22 +1559,6 @@ public:
     //we must find a destseq for this compaction
     if (-1 == destseq)
     {
-      string sseq;
-      int ret = pdb->ReservedGet(vfmCompactingKey, sseq);  
-      if (ret != 0)
-      {
-        //no key is found, so this is no vlog files
-        availCompactingSeq = 1;
-        cout << "compacting seq is " << availCompactingSeq << endl;
-      }
-      else
-      {
-        availCompactingSeq = atoi(sseq.c_str());
-        cout << "compacting seq is " << availCompactingSeq << endl;
-
-        assert(availCompactingSeq % 2 == 1);
-      }
-
       //destvf is newly created, and we set the right CompactionHeader here
       //it must be appenable during compaction
       VlogFile *vf = new VlogFile(availCompactingSeq); 
@@ -1559,12 +1568,6 @@ public:
       allfiles.insert(make_pair(availCompactingSeq, vf));
       destseq = availCompactingSeq;
 
-      //put seq 1 to rocksdb
-      if (1 == availCompactingSeq)
-      {
-        pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
-      }
-
       //update src vlog file's CompactionHeader to record the compaction process
       VlogFile *srcvf = allfiles[srcseq];
 
@@ -1572,6 +1575,13 @@ public:
       CompactionHeader srcheader(-1, availCompactingSeq, true, false);
       assert(nullptr != srcvf);
       srcvf->WriteCompactionHeader(srcheader);
+
+      //this compacting vlog file is owned by me, so we can add it now,
+      //others should use a bigger seq.
+      //we don't own a availCompactingSeq when it's a resumable compaction
+      //in which case we don't update availCompactingSeq
+      availCompactingSeq += 2;
+      pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
     }
     else
     {
@@ -1584,19 +1594,10 @@ public:
   
     assert(-1 != startingoffset);
 
+    cout << "start compacting vlog file " << srcseq << " to " << destseq << endl;
     //we should apply a new VlogFile for compaction
     //maybe we should use a big number seq to avoid seq race condition
     compactToNewVlog(srcseq, destseq, startingoffset);
-
-    //we don't own a availCompactingSeq when it's a resumable compaction
-    //in which case we don't update availCompactingSeq
-    if (1 == availCompactingSeq)
-    {
-      //(fixme)after compaction, the file should be closed
-      //after compaction, update the availCompactingSeq
-      availCompactingSeq += 2;
-      pdb->ReservedPut(vfmCompactingKey, to_string(availCompactingSeq));
-    }
   }
 };
 
@@ -1655,7 +1656,7 @@ int DBOperations::DB_BatchPut(const vector<string> &keys, const vector<string> &
   for (int i = 0; i < nums; i++)
   {
     curSeq = ++lastOperatedSeq;
-    cout << __func__ << ": we are using " << curSeq << endl;
+    //cout << __func__ << ": we are using " << curSeq << endl;
     Seqs.push_back(curSeq);
     
     //record to vlog even when deletion
@@ -1730,7 +1731,7 @@ int DBOperations::DB_Put(const string &key, const string &value)
   VlogOndiskEntryHeader vheader(key.size(), value.size(), Seq);
   string vlogstring;
 
-  cout << "we are using " << Seq << endl;
+  //cout << "we are using " << Seq << endl;
 
   //what we need to write is vheader + key + value
   //(fixme): it may be very large
@@ -1782,6 +1783,7 @@ int DBOperations::DB_Delete(const string &key)
   //see ../doc/vlogfile.md for more details.
   SequenceNumber Seq = ++lastOperatedSeq;
 
+  //(fixme)move it to a compaction scheduler thread for performance
   EntryLocator el(0, 0);
   el.decode(locator);
   VlogFile *vf = pvfm->GetVlogFile(el.GetVlogSeq());
@@ -1790,7 +1792,7 @@ int DBOperations::DB_Delete(const string &key)
   vf->IncreOutdateKeys();
   if (vf->GetOutdatedKeys() > maxOutdatedKeys)
   {
-    cout << "to many outdated keys, try to trigger compaction" << endl;
+    cout << "too many outdated keys, try to trigger compaction" << endl;
     //it's time to wake up vlog compaction thread
     {
       std::unique_lock<std::mutex> l(vlogCompactionLock);

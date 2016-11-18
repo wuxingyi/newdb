@@ -127,13 +127,19 @@ private:
       op.DB_Put(key, value);
     }
 
-    for(int i = 0; i < 1; i++)
+    for(int i = 0; i < testkeys; i++)
     {
-      op.DB_Delete(keys[i]);
+      if (i % 3 == 0)
+      {
+        op.DB_Delete(keys[i]);
+      }
     }
     cout << __func__ << ": FINISHED" << endl;
     
-    TEST_QueryAll();
+    //wait 5 seconds for compaction
+    sleep(2);
+    assert(0);
+    //TEST_QueryAll();
   }
 
   void TEST_QueryAll()
@@ -442,6 +448,5 @@ int main(int argc, char **argv)
   {
     test.run();
   }
-  sleep(1);
   return 0;
 }

@@ -64,7 +64,11 @@ we manage a very big compacted vlog file for simplicity, it helps us with less
 open files. As describled in 1.3, we should do a double compaction to the compacted
 vlog when it has too many outdated keys, however, since a compacted vlog may hold  
 much larger nubmber of entries, the users configuration for triggering compaction   
-should be much bigger.
+should be much bigger.  
+note that currently how many keys are deleted is **not** persisted in the vlog file,   
+so after a crash, we trigger a compaction only when users configured number of keys  
+are deleted, and the previously deleted keys are not counted.
+
 
 
 2. when to delete source vlog files?
