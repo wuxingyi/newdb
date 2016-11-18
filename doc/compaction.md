@@ -67,7 +67,9 @@ much larger nubmber of entries, the users configuration for triggering compactio
 should be much bigger.  
 note that currently how many keys are deleted is **not** persisted in the vlog file,   
 so after a crash, we trigger a compaction only when users configured number of keys  
-are deleted, and the previously deleted keys are not counted.
+are deleted, and the previously deleted keys are not counted. In the worst case,  
+a full vlog file with no valid entry will exist forever, so this should be fixed  
+in future versions.
 
 
 
