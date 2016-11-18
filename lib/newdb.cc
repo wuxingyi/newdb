@@ -2198,7 +2198,7 @@ public:
 
         cout << getThreadName() << " "   << Self() << " srcseq is " << srcseq << " , destseq is " << destseq << endl;
         pvfm->CompactVlog(srcseq, destseq);
-        cout << getThreadName() << " "   << Self() << " finshed compacting " << srcseq << endl;
+        cout << getThreadName() << " "   << Self() << " finished compacting " << srcseq << endl;
         l.lock();
       }
     }
