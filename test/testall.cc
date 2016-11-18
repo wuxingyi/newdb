@@ -144,7 +144,7 @@ private:
     cout << __func__ << ": FINISHED" << endl;
     
     //wait 5 seconds for compaction
-    sleep(sleeptime);
+    //sleep(sleeptime);
     assert(0);
     //TEST_QueryAll();
   }
@@ -455,5 +455,7 @@ int main(int argc, char **argv)
   {
     test.run();
   }
+  
+  
   return 0;
 }

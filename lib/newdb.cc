@@ -29,6 +29,7 @@
 
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
+#include "thread.h"
 #include "newdb.h"
 
 /*
@@ -2112,11 +2113,6 @@ public:
   }
 };
 
-inline std::ostream& operator<<(std::ostream& out, const timespec& t)
-{
-  return out << t.tv_sec << "."<< t.tv_nsec << endl;
-}
-
 void do_db_prefetch()
 {
   rocksdb::Iterator *it = dbprefetchQ.front();
@@ -2147,31 +2143,6 @@ void do_db_prefetch()
   delete it;
 }
 
-void *dbPrefetchThread(void *p)
-{
-  cout << __func__ << endl;
-  std::unique_lock<std::mutex> l(db_prefetchLock);
-  while (true)
-  {
-    if (dbprefetchQ.empty())
-    {
-      if (stopDbPrefetch)
-      {
-        cout << " quiting " << endl;
-        break;
-      }
-      cout << __func__ << " sleep" << endl;
-      db_prefetchCond.wait(l);
-      cout << __func__ << " wake" << endl;
-    }
-    else
-    {
-      do_db_prefetch();
-    }
-  }
-  return NULL;
-}
-
 void do_vlog_prefetch()
 {
   map<string, string> prefectedKV = vlogprefetchQ.front();
@@ -2185,87 +2156,131 @@ void do_vlog_prefetch()
   vlogprefetchQ.pop_front();
 }
 
-void *vlogPrefetchThread(void *p)
+class CompactionThread : public Thread
 {
-  cout << __func__ << endl;
-  std::unique_lock<std::mutex> l(vlog_prefetchLock);
-  while (true)
+public:
+  string getThreadName()
   {
-    if (vlogprefetchQ.empty())
-    {
-      if (true == stopVlogPrefetch)
-      {
-        cout << " quiting " << endl;
-        break;
-      }
-      cout << __func__ << " sleep" << endl;
-      vlog_prefetchCond.wait(l);
-      cout << __func__ << " wake" << endl;
-    }
-    else
-    {
-      do_vlog_prefetch();
-    }
+    return "CompactionThread";
   }
-  return NULL;
-}
-pthread_t db_prefetch, vlog_prefetch;
-void initPrefetch()
-{
-  pthread_attr_t *thread_attr = NULL;
 
-  int r = pthread_create(&db_prefetch, thread_attr, dbPrefetchThread, NULL);
-  assert(0 == r);
-
-  r = pthread_create(&vlog_prefetch, thread_attr, vlogPrefetchThread, NULL);
-  assert(0 == r);
-}
-
-void *vlogCompactionThread(void *p)
-{
-  cout << __func__ << endl;
-  std::unique_lock<std::mutex> l(vlogCompactionLock);
-  while (true)
+  void *Run()
   {
-    if (vlogSeqQ.empty())
+    cout << getThreadName() << " " << hex << Self() << " starts "<< endl;
+    std::unique_lock<std::mutex> l(vlogCompactionLock);
+    while (true)
     {
-      if (true == stopVlogCompaction)
+      if (vlogSeqQ.empty())
       {
-        cout << " quiting " << endl;
-        break;
+        if (true == stopVlogCompaction)
+        {
+          cout << " quiting " << endl;
+          break;
+        }
+        cout << getThreadName() << " " << hex << Self() << " sleep" << endl;
+        vlogCompaction_cond.wait(l);
+        cout << getThreadName() << " " << hex << Self() << " wake" << endl;
       }
-      cout << __func__ << " sleep" << endl;
-      vlogCompaction_cond.wait(l);
-      cout << __func__ << " wake" << endl;
-    }
-    else
-    {
-      l.unlock();
+      else
+      {
+        l.unlock();
 
-      //there are two different case here, when destseq == -1, we need
-      //to provide destseq by offering a compactingKey, else, this is a 
-      //resumed compaction, we use the original destseq.
-      int srcseq = vlogSeqQ.front().first;
-      int destseq = vlogSeqQ.front().second;
+        //there are two different case here, when destseq == -1, we need
+        //to provide destseq by offering a compactingKey, else, this is a 
+        //resumed compaction, we use the original destseq.
+        int srcseq = vlogSeqQ.front().first;
+        int destseq = vlogSeqQ.front().second;
 
-      pvfm->CompactVlog(srcseq, destseq);
-      cout << "finshed compacting " << srcseq << endl;
-      vlogSeqQ.pop_front();
-      l.lock();
+        pvfm->CompactVlog(srcseq, destseq);
+        cout << "finshed compacting " << srcseq << endl;
+        vlogSeqQ.pop_front();
+        l.lock();
+      }
     }
+    return NULL;
   }
-  return NULL;
+};
+class VlogPrefetchThread : public Thread
+{
+public:
+  string getThreadName()
+  {
+    return "VlogPrefetchThread";
+  }
+  void *Run()
+  {
+    cout << getThreadName() << " " << hex << Self() << " starts "<< endl;
+    std::unique_lock<std::mutex> l(vlog_prefetchLock);
+    while (true)
+    {
+      if (vlogprefetchQ.empty())
+      {
+        if (true == stopVlogPrefetch)
+        {
+          cout << " quiting " << endl;
+          break;
+        }
+        cout << getThreadName() << " " << hex << Self() << " sleep" << endl;
+        vlog_prefetchCond.wait(l);
+        cout << getThreadName() << " " << hex << Self() << " wake" << endl;
+      }
+      else
+      {
+        do_vlog_prefetch();
+      }
+    }
+    return NULL;
+  }
+};
+class DBPrefetchThread : public Thread
+{
+public:
+  string getThreadName()
+  {
+    return "DBPrefetchThread";
+  }
+  void *Run()
+  {
+    cout << getThreadName() << " " << hex << Self() << " starts "<< endl;
+    std::unique_lock<std::mutex> l(db_prefetchLock);
+    while (true)
+    {
+      if (dbprefetchQ.empty())
+      {
+        if (stopDbPrefetch)
+        {
+          cout << " quiting " << endl;
+          break;
+        }
+        cout << getThreadName() << " " << hex << Self() << " sleep" << endl;
+        db_prefetchCond.wait(l);
+        cout << getThreadName() << " " << hex << Self() << " wake" << endl;
+      }
+      else
+      {
+        do_db_prefetch();
+      }
+    }
+    return NULL;
+  }  
+};
+
+void initPrefetchThread()
+{
+  Thread *dbprefetch = new DBPrefetchThread();
+  assert(nullptr != dbprefetch);
+  dbprefetch->Start();
+
+  Thread *vlogprefetch = new VlogPrefetchThread();
+  assert(nullptr != vlogprefetch);
+  vlogprefetch->Start();
 }
 
-pthread_t vlog_Compaction;
-void initCompaction()
+void initCompactionThread()
 {
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
-
-  int r = pthread_create(&vlog_Compaction, &attr, vlogCompactionThread, NULL);
-  assert(0 == r);
+  Thread *compaction = new CompactionThread();
+  assert(nullptr != compaction);
+  compaction->Start();
 }
 
 void signalHandler(int signo)
@@ -2321,7 +2336,7 @@ void DB::open()
     pssm = new SnapshotManager();
     assert(nullptr != pdb);
     assert(nullptr != pvfm);
-    initPrefetch();
-    initCompaction();
+    initPrefetchThread();
+    initCompactionThread();
     initSignal();
 }  

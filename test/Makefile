@@ -12,7 +12,7 @@ endif
 
 all:testall 
 testall: testall.cc
-	$(CXX) $(CXXFLAGS) $@.cc ../lib/newdb.cc -g -o$@ ../../librocksdb.a -lboost_filesystem -lboost_system -lboost_program_options -I../include -I../../include -O0 -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
+	$(CXX) $(CXXFLAGS) $@.cc ../lib/thread.cc ../lib/newdb.cc -g -o$@ ../../librocksdb.a -lboost_filesystem -lboost_system -lboost_program_options -I../include -I../../include -O0 -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 clean:
 	rm -rf ./testall

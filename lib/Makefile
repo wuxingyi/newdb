@@ -12,8 +12,8 @@ endif
 
 all: newdb
 
-newdb: newdb.cc 
-	$(CXX) $(CXXFLAGS) $@.cc -g -o$@ ../../librocksdb.a -lboost_program_options -I../include -I../../include -O0 -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS) -lboost_filesystem -lboost_system
+newdb: newdb.cc thread.cc
+	$(CXX) $(CXXFLAGS) $@.cc -g -o$@ thread.cc ../../librocksdb.a -lboost_program_options -I../include -I../../include -O0 -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS) -lboost_filesystem -lboost_system -I.
 
 clean:
 	rm -rf ./newdb
