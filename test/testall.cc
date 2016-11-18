@@ -124,10 +124,10 @@ private:
     {
       if (i % 100 == 0)
       {
-        cout << "processing  " << i << "entry" << endl;
+        cout << "processing the  " << i << "th entry" << endl;
       }
       int num = rand();
-      string value(num/100000,'c'); 
+      string value(num/1000000,'c'); 
       string key = to_string(num);
       keys.push_back(key);
       
@@ -136,16 +136,16 @@ private:
 
     for(int i = 0; i < testkeys; i++)
     {
-      if (i % 3 == 0)
-      {
+      //if (i % 3 == 0)
+      //{
         op.DB_Delete(keys[i]);
-      }
+      //}
     }
     cout << __func__ << ": FINISHED" << endl;
     
     //wait 5 seconds for compaction
     //sleep(sleeptime);
-    assert(0);
+    //assert(0);
     //TEST_QueryAll();
   }
 
@@ -456,6 +456,7 @@ int main(int argc, char **argv)
     test.run();
   }
   
+  sleep(10);
   
   return 0;
 }

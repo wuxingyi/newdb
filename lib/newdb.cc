@@ -30,6 +30,7 @@
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "thread.h"
+#include "workqueue.h"
 #include "newdb.h"
 
 /*
@@ -72,7 +73,7 @@ static std::mutex vlog_prefetchLock;
 static map<string, string> prefetchedKV;
 
 //an element in this queue is a map of (srcseq, destseq)
-static deque<pair<int, int>> vlogSeqQ;
+static Wqueue<pair<int, int>> vlogCompactionQueue; //must be initialized
 static std::condition_variable vlogCompaction_cond;
 static std::mutex vlogCompactionLock;
 typedef uint64_t SequenceNumber;
@@ -297,7 +298,7 @@ private:
   int seq;                   //sequence of this vlog file
   int64_t tailOffset;        //writable offset of this vlog file
   int64_t compactingOffset;  //compacting offset of this vlog file
-  const int64_t maxVlogFileSize = 1024*1024; //set a upper bound for vlog file size
+  const int64_t maxVlogFileSize = 8*1024; //set a upper bound for vlog file size
   string filename;         //name of this vlog file
   BORNBY born;
   int64_t outdatedkeys = 0;   //how many deleted keys this vlog file holds
@@ -1025,7 +1026,7 @@ private:
             std::unique_lock<std::mutex> l(vlogCompactionLock);
 
             //srcseq is my own seq, destseq is cheader.destseq
-            vlogSeqQ.push_back(make_pair(vf->GetSeq(), cheader.destseq));
+            vlogCompactionQueue.Add(make_pair(vf->GetSeq(), cheader.destseq));
             cout << "waking up compaction thread to resume" << endl;
             vlogCompaction_cond.notify_one();
           }
@@ -1795,7 +1796,7 @@ int DBOperations::DB_Delete(const string &key)
       //maybe others have already compact it 
       if (pvfm->ShouldCompact(vf->GetSeq()))
       {
-        vlogSeqQ.push_back(make_pair(vf->GetSeq(), -1));
+        vlogCompactionQueue.Add(make_pair(vf->GetSeq(), -1));
         cout << "waking up compaction thread " << endl;
         vlogCompaction_cond.notify_one();
       }
@@ -2158,7 +2159,10 @@ void do_vlog_prefetch()
 
 class CompactionThread : public Thread
 {
+private:
+  Wqueue<pair<int, int>> &compactionQueue; //must be initialized
 public:
+  CompactionThread(Wqueue<pair<int, int>> &queue_): compactionQueue(queue_){}
   string getThreadName()
   {
     return "CompactionThread";
@@ -2166,20 +2170,20 @@ public:
 
   void *Run()
   {
-    cout << getThreadName() << " " << hex << Self() << " starts "<< endl;
+    cout << getThreadName() << " "   << Self() << " starts "<< endl;
     std::unique_lock<std::mutex> l(vlogCompactionLock);
     while (true)
     {
-      if (vlogSeqQ.empty())
+      if (compactionQueue.Empty())
       {
         if (true == stopVlogCompaction)
         {
           cout << " quiting " << endl;
           break;
         }
-        cout << getThreadName() << " " << hex << Self() << " sleep" << endl;
+        cout << getThreadName() << " "   << Self() << " sleep" << endl;
         vlogCompaction_cond.wait(l);
-        cout << getThreadName() << " " << hex << Self() << " wake" << endl;
+        cout << getThreadName() << " "   << Self() << " wake" << endl;
       }
       else
       {
@@ -2188,12 +2192,13 @@ public:
         //there are two different case here, when destseq == -1, we need
         //to provide destseq by offering a compactingKey, else, this is a 
         //resumed compaction, we use the original destseq.
-        int srcseq = vlogSeqQ.front().first;
-        int destseq = vlogSeqQ.front().second;
+        pair<int, int> workpair = compactionQueue.Remove();
+        int srcseq = workpair.first;
+        int destseq = workpair.second;
 
+        cout << getThreadName() << " "   << Self() << " srcseq is " << srcseq << " , destseq is " << destseq << endl;
         pvfm->CompactVlog(srcseq, destseq);
-        cout << "finshed compacting " << srcseq << endl;
-        vlogSeqQ.pop_front();
+        cout << getThreadName() << " "   << Self() << " finshed compacting " << srcseq << endl;
         l.lock();
       }
     }
@@ -2209,7 +2214,7 @@ public:
   }
   void *Run()
   {
-    cout << getThreadName() << " " << hex << Self() << " starts "<< endl;
+    cout << getThreadName() << " "   << Self() << " starts "<< endl;
     std::unique_lock<std::mutex> l(vlog_prefetchLock);
     while (true)
     {
@@ -2220,9 +2225,9 @@ public:
           cout << " quiting " << endl;
           break;
         }
-        cout << getThreadName() << " " << hex << Self() << " sleep" << endl;
+        cout << getThreadName() << " "   << Self() << " sleep" << endl;
         vlog_prefetchCond.wait(l);
-        cout << getThreadName() << " " << hex << Self() << " wake" << endl;
+        cout << getThreadName() << " "   << Self() << " wake" << endl;
       }
       else
       {
@@ -2241,7 +2246,7 @@ public:
   }
   void *Run()
   {
-    cout << getThreadName() << " " << hex << Self() << " starts "<< endl;
+    cout << getThreadName() << " "   << Self() << " starts "<< endl;
     std::unique_lock<std::mutex> l(db_prefetchLock);
     while (true)
     {
@@ -2252,9 +2257,9 @@ public:
           cout << " quiting " << endl;
           break;
         }
-        cout << getThreadName() << " " << hex << Self() << " sleep" << endl;
+        cout << getThreadName() << " "   << Self() << " sleep" << endl;
         db_prefetchCond.wait(l);
-        cout << getThreadName() << " " << hex << Self() << " wake" << endl;
+        cout << getThreadName() << " "   << Self() << " wake" << endl;
       }
       else
       {
@@ -2278,9 +2283,17 @@ void initPrefetchThread()
 
 void initCompactionThread()
 {
-  Thread *compaction = new CompactionThread();
-  assert(nullptr != compaction);
-  compaction->Start();
+  //two threads share a single workqueue
+  vector<Thread *> vcompaction;
+  for (int i=0; i<8;i++)
+  {
+    vcompaction.push_back(new CompactionThread(vlogCompactionQueue));
+  }
+
+  for(int i=0; i<8; i++)
+  {
+    vcompaction[i]->Start();
+  }
 }
 
 void signalHandler(int signo)
