@@ -29,6 +29,7 @@
 #include "../include/newdb.h"
 
 static int testkeys = 10;
+static int sleeptime = 5;
 
 class TEST
 {
@@ -42,6 +43,7 @@ private:
         ("help,h", "produce help message")
         //("sync,s", value<bool>()->default_value(true), "whether use sync flag")
         ("keys,k", value<int>()->default_value(1), "how many keys to put")
+        ("sleeptime,s", value<int>()->default_value(5), "how many seconds to sleep")
         ;
   
     variables_map vm;        
@@ -58,6 +60,7 @@ private:
     //we can make use of vlog to recover.
     //syncflag = vm["sync"].as<bool>();
     testkeys = vm["keys"].as<int>();
+    sleeptime = vm["sleeptime"].as<int>();
     return 0;
   }
 public:
@@ -119,8 +122,12 @@ private:
     vector<string> keys;
     for(int i = 0; i < testkeys; i++)
     {
+      if (i % 100 == 0)
+      {
+        cout << "processing  " << i << "entry" << endl;
+      }
       int num = rand();
-      string value(num/1000000,'c'); 
+      string value(num/100000,'c'); 
       string key = to_string(num);
       keys.push_back(key);
       
@@ -137,7 +144,7 @@ private:
     cout << __func__ << ": FINISHED" << endl;
     
     //wait 5 seconds for compaction
-    sleep(2);
+    sleep(sleeptime);
     assert(0);
     //TEST_QueryAll();
   }

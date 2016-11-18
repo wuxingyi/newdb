@@ -52,7 +52,6 @@ const std::string kDBVlogBase = "./DBDATA/Vlog";
 bool syncflag = false;
 int testkeys = 10;
 int maxOutdatedKeys = 0;
-static int assertat = 0;
 
 //VlogFileManager is singleton, only one instance
 //only used by the write/read thread
@@ -297,7 +296,7 @@ private:
   int seq;                   //sequence of this vlog file
   int64_t tailOffset;        //writable offset of this vlog file
   int64_t compactingOffset;  //compacting offset of this vlog file
-  const int64_t maxVlogFileSize = 8*1024; //set a upper bound for vlog file size
+  const int64_t maxVlogFileSize = 1024*1024; //set a upper bound for vlog file size
   string filename;         //name of this vlog file
   BORNBY born;
   int64_t outdatedkeys = 0;   //how many deleted keys this vlog file holds
@@ -1156,8 +1155,8 @@ private:
     currSeq = vheader.GetEntrySeq();
     int64_t nextoffset = vlogoffset + fixedsize + vheader.GetValueSize() + vheader.GetKeySize(); 
 
-    cout << "nextoffset is " << nextoffset << endl;
-    cout << "tailoffset is " << vf->GetTailOffset() << endl;
+    //cout << "nextoffset is " << nextoffset << endl;
+    //cout << "tailoffset is " << vf->GetTailOffset() << endl;
     //(fixme)don't use recursion
     if (nextoffset < vf->GetTailOffset())
     {
@@ -1278,11 +1277,6 @@ private:
       cout << "compacting from " << srcseq << " to " << destseq << " at offset " << vlogoffset << endl;
     }
 
-    //interrupt compaction every three times
-    //if (3 == assertat)
-    //  assert(0);
-
-    ++assertat;
     VlogFile *srcvf = allfiles[srcseq];
     if (vlogoffset >= srcvf->GetTailOffset())
     {
